@@ -11,7 +11,6 @@
 
 use std::path::{Path, PathBuf};
 use truth_core::config::RepoConfig;
-use walkdir::WalkDir;
 
 /// Directories always skipped regardless of config (VCS, build output, deps).
 const ALWAYS_SKIP_DIRS: &[&str] = &[
@@ -78,49 +77,75 @@ pub fn walk(root: &Path, cfg: &RepoConfig) -> Vec<PathBuf> {
         cfg.include.iter().map(|i| root.join(i)).collect()
     };
 
-    let mut out = Vec::new();
-    for scope in &scopes {
-        if scope.is_file() {
-            if !is_excluded(scope, root, cfg) && is_indexable_file(scope) {
-                out.push(scope.clone());
-            }
-            continue;
-        }
-        let walker = WalkDir::new(scope).into_iter().filter_entry(|e| {
-            // Prune skipped directories so we never descend into them.
-            !(e.file_type().is_dir() && is_skipped_dir(e.path(), root, cfg))
-        });
-        for entry in walker.filter_map(Result::ok) {
-            let p = entry.path();
-            if entry.file_type().is_file()
-                && !is_excluded(p, root, cfg)
-                && is_indexable_file(p)
-                && !is_too_large(p)
-            {
-                out.push(p.to_path_buf());
-            }
-        }
+    let out = std::sync::Mutex::new(Vec::new());
+
+    // Build a parallel, .gitignore-aware walker rooted at the first scope, then
+    // add the remaining scopes. `ignore` prunes git-ignored paths and walks on
+    // all cores (this is what powers ripgrep).
+    let mut scopes_iter = scopes.iter();
+    let first = match scopes_iter.next() {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let mut builder = ignore::WalkBuilder::new(first);
+    for s in scopes_iter {
+        builder.add(s);
     }
+    builder
+        .standard_filters(true) // .gitignore, .ignore, hidden files
+        .git_global(false)
+        .require_git(false)
+        .filter_entry({
+            let root = root.to_path_buf();
+            let cfg_exclude = cfg.exclude.clone();
+            move |e| {
+                // Prune always-skip and configured-exclude directories early.
+                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    let name = e.file_name().to_string_lossy();
+                    if ALWAYS_SKIP_DIRS.contains(&name.as_ref())
+                        || cfg_exclude.iter().any(|x| x == &name)
+                    {
+                        return false;
+                    }
+                    // Also prune if a parent component is excluded.
+                    return !is_excluded_with(e.path(), &root, &cfg_exclude);
+                }
+                true
+            }
+        });
+
+    builder.build_parallel().run(|| {
+        let out = &out;
+        let root = root.to_path_buf();
+        let cfg_exclude = cfg.exclude.clone();
+        Box::new(move |result| {
+            if let Ok(entry) = result {
+                let p = entry.path();
+                if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+                    && !is_excluded_with(p, &root, &cfg_exclude)
+                    && is_indexable_file(p)
+                    && !is_too_large(p)
+                {
+                    out.lock().unwrap().push(p.to_path_buf());
+                }
+            }
+            ignore::WalkState::Continue
+        })
+    });
+
+    let mut out = out.into_inner().unwrap();
     out.sort();
     out.dedup();
     out
 }
 
-/// A directory is skipped if it is an always-skip dir or matches an exclude.
-fn is_skipped_dir(path: &Path, root: &Path, cfg: &RepoConfig) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if ALWAYS_SKIP_DIRS.contains(&name) {
-        return true;
-    }
-    is_excluded(path, root, cfg)
-}
-
-/// A path is excluded if any of its components matches a configured exclude.
-fn is_excluded(path: &Path, root: &Path, cfg: &RepoConfig) -> bool {
+/// Like `is_excluded`, but takes the exclude list directly (for closures that
+/// can't borrow the whole config).
+fn is_excluded_with(path: &Path, root: &Path, exclude: &[String]) -> bool {
     let rel = path.strip_prefix(root).unwrap_or(path);
     rel.components().any(|c| {
         let s = c.as_os_str().to_string_lossy();
-        cfg.exclude.iter().any(|e| e == &s) || ALWAYS_SKIP_DIRS.contains(&s.as_ref())
+        exclude.iter().any(|e| e == &s) || ALWAYS_SKIP_DIRS.contains(&s.as_ref())
     })
 }
 

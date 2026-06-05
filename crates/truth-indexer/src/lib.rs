@@ -3,7 +3,7 @@
 pub mod extract;
 pub mod walker;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rayon::prelude::*;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -43,69 +43,165 @@ impl IndexStats {
     }
 }
 
-/// Index the repo rooted at `cfg.root` (overridable via `root_override`),
-/// replacing previously indexed repo evidence.
+/// Full re-index: clear everything and rebuild. Used by eval/report (fresh
+/// in-memory DBs) and by `truth index --full`.
 pub fn index_repo(
     conn: &Connection,
     cfg: &RepoConfig,
     root_override: Option<&Path>,
 ) -> Result<IndexStats> {
+    index_repo_opts(conn, cfg, root_override, false)
+}
+
+/// Index with an optional incremental fast-path.
+///
+/// When `incremental`, files whose content hash matches the previously indexed
+/// hash are skipped entirely (no re-extraction, no writes); only changed/new
+/// files are rebuilt and deleted files are pruned. On an unchanged repo this is
+/// just one parallel hash pass — typically ~10-50ms even on a large repo.
+pub fn index_repo_opts(
+    conn: &Connection,
+    cfg: &RepoConfig,
+    root_override: Option<&Path>,
+    incremental: bool,
+) -> Result<IndexStats> {
     let start = std::time::Instant::now();
     let root = root_override.unwrap_or_else(|| Path::new(&cfg.root));
-    truth_db::repo::clear_repo_evidence(conn)?;
+
+    // Prior state for incremental diffing (empty for a full rebuild).
+    let prior = if incremental {
+        truth_db::repo::repo_file_hashes(conn)?
+    } else {
+        truth_db::repo::clear_repo_evidence(conn)?;
+        std::collections::HashMap::new()
+    };
 
     let files = walker::walk(root, cfg);
     let selected = files.len();
     let t_walk = start.elapsed();
     let t0 = std::time::Instant::now();
 
-    // Phase 1 (parallel): read + extract each file independently. This is pure
-    // CPU/IO with no shared state, so it scales across cores via rayon. rusqlite
-    // is not Sync, so no DB work happens here.
-    let built: Vec<FileBuild> = files.par_iter().filter_map(|path| build_file(path)).collect();
+    // Phase 1 (parallel): read + hash each file; extract only changed/new files.
+    // Returns Unchanged (hash matched) or Built(FileBuild). rusqlite is not Sync,
+    // so no DB work happens here.
+    let outcomes: Vec<BuildOutcome> = files
+        .par_iter()
+        .filter_map(|path| build_outcome(path, &prior))
+        .collect();
     let t_build = t0.elapsed();
     let t1 = std::time::Instant::now();
 
-    // Phase 2 (serial): write everything in one transaction — turns thousands of
-    // fsync-bound INSERTs into a single commit (the dominant cost at scale).
+    // Compute the diff: which prior files survived (so we can prune deletions).
+    let mut seen_uris = std::collections::HashSet::new();
+    let mut changed_old_ids: Vec<String> = Vec::new();
+    let mut built: Vec<&FileBuild> = Vec::new();
+    let mut files_read = 0usize;
+    for o in &outcomes {
+        match o {
+            BuildOutcome::Unchanged { uri } => {
+                seen_uris.insert(uri.clone());
+                files_read += 1;
+            }
+            BuildOutcome::Built { build, replaced } => {
+                seen_uris.insert(build.artifact.uri.clone());
+                if let Some(old_id) = replaced {
+                    changed_old_ids.push(old_id.clone());
+                }
+                built.push(build.as_ref());
+                files_read += 1;
+            }
+        }
+    }
+    // Files in the DB but no longer on disk (incremental only).
+    let deleted_ids: Vec<String> = prior
+        .iter()
+        .filter(|(uri, _)| !seen_uris.contains(*uri))
+        .map(|(_, (id, _))| id.clone())
+        .collect();
+
     let mut stats = IndexStats {
         files: selected,
-        files_read: built.len(),
+        files_read,
         artifacts: 0,
         evidence_items: 0,
         elapsed: std::time::Duration::ZERO,
     };
-    // Bulk-load pragmas: indexing always clears and rebuilds, so durability of
-    // intermediate writes does not matter — trade it for speed.
+
+    // Bulk-load pragmas: indexing rebuilds, so durability of intermediate writes
+    // does not matter — trade it for speed.
     conn.execute_batch(
         "PRAGMA synchronous = OFF;
          PRAGMA journal_mode = MEMORY;
          PRAGMA temp_store = MEMORY;",
     )?;
-    conn.execute_batch("BEGIN")?;
+
+    // Flatten built files into column vectors for one prepared statement each.
+    let artifacts: Vec<&Artifact> = built.iter().map(|fb| &fb.artifact).collect();
+    let mut spans: Vec<&Span> = Vec::new();
+    let mut items: Vec<&EvidenceItem> = Vec::new();
     for fb in &built {
-        truth_db::repo::insert_artifact(conn, &fb.artifact)
-            .with_context(|| format!("inserting artifact for {}", fb.artifact.uri))?;
-        stats.artifacts += 1;
         for (span, item) in &fb.evidence {
-            truth_db::repo::insert_span(conn, span)?;
-            truth_db::repo::insert_evidence(conn, item)?;
-            stats.evidence_items += 1;
+            spans.push(span);
+            items.push(item);
         }
     }
+    stats.artifacts = artifacts.len();
+    stats.evidence_items = items.len();
+
+    conn.execute_batch("BEGIN")?;
+    // Prune changed (to be replaced) and deleted files first.
+    for id in changed_old_ids.iter().chain(deleted_ids.iter()) {
+        truth_db::repo::delete_artifact_cascade(conn, id)?;
+    }
+    truth_db::repo::insert_artifacts(conn, &artifacts)?;
+    truth_db::repo::insert_spans(conn, &spans)?;
+    truth_db::repo::insert_evidence_items(conn, &items)?;
     conn.execute_batch("COMMIT")?;
 
     if std::env::var("TRUTH_PROFILE").is_ok() {
         eprintln!(
-            "[profile] walk={:.0}ms build(parallel)={:.0}ms write={:.0}ms",
+            "[profile] walk={:.0}ms build(parallel)={:.0}ms write={:.0}ms  (incremental={}, rebuilt={}, deleted={})",
             t_walk.as_secs_f64() * 1000.0,
             t_build.as_secs_f64() * 1000.0,
             t1.elapsed().as_secs_f64() * 1000.0,
+            incremental,
+            built.len(),
+            deleted_ids.len(),
         );
     }
 
     stats.elapsed = start.elapsed();
     Ok(stats)
+}
+
+/// Outcome of processing one file in the parallel phase.
+enum BuildOutcome {
+    /// File hash matched the prior index — nothing to do.
+    Unchanged { uri: String },
+    /// File is new or changed; `replaced` is the prior artifact id to delete.
+    /// Boxed to keep the enum small (the `Unchanged` path is the common one in
+    /// incremental re-indexing).
+    Built { build: Box<FileBuild>, replaced: Option<String> },
+}
+
+/// Read + hash a file; extract only if new or changed vs `prior`.
+fn build_outcome(
+    path: &Path,
+    prior: &std::collections::HashMap<String, (String, String)>,
+) -> Option<BuildOutcome> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let hash = hex_sha256(&contents);
+    let uri = path.to_string_lossy().into_owned();
+
+    if let Some((old_id, old_hash)) = prior.get(&uri) {
+        if *old_hash == hash {
+            return Some(BuildOutcome::Unchanged { uri });
+        }
+        let build = Box::new(build_from(path, &uri, contents, hash));
+        return Some(BuildOutcome::Built { build, replaced: Some(old_id.clone()) });
+    }
+    let build = Box::new(build_from(path, &uri, contents, hash));
+    Some(BuildOutcome::Built { build, replaced: None })
 }
 
 /// A fully-built (artifact + spans/evidence) file, ready for serial insertion.
@@ -114,17 +210,14 @@ struct FileBuild {
     evidence: Vec<(Span, EvidenceItem)>,
 }
 
-/// Read one file and extract its evidence. Returns `None` for binary/unreadable
-/// files. Pure: no DB access, safe to call in parallel.
-fn build_file(path: &Path) -> Option<FileBuild> {
-    let contents = std::fs::read_to_string(path).ok()?;
-    let hash = hex_sha256(&contents);
-    let uri = path.to_string_lossy().into_owned();
+/// Build an artifact + evidence from already-read file contents. Pure: no DB
+/// access, safe to call in parallel.
+fn build_from(path: &Path, uri: &str, contents: String, hash: String) -> FileBuild {
     let artifact = Artifact {
         id: new_id(),
         source: SourceKind::GitRepo,
         kind: artifact_kind_for(path),
-        uri: uri.clone(),
+        uri: uri.to_string(),
         external_id: None,
         hash: Some(hash),
         authored_at: None,
@@ -133,30 +226,33 @@ fn build_file(path: &Path) -> Option<FileBuild> {
         metadata_json: serde_json::json!({}),
     };
 
-    let mut evidence = Vec::new();
-    for fact in extract::extract_file(path, &contents) {
+    let facts = extract::extract_file(path, &contents);
+    let mut evidence = Vec::with_capacity(facts.len());
+    for fact in facts {
+        let authority = authority_for(&fact.predicate, path);
         let span = Span {
             id: new_id(),
             artifact_id: artifact.id.clone(),
-            text: fact.text.clone(),
+            text: fact.text.to_string(),
             start_line: Some(fact.line),
             end_line: Some(fact.line),
             start_byte: None,
             end_byte: None,
-            metadata_json: serde_json::json!({}),
+            metadata_json: empty_json(),
         };
         let item = EvidenceItem {
             id: new_id(),
             span_id: span.id.clone(),
             evidence_type: EvidenceType::Definition,
-            subject_text: Some(fact.subject.clone()),
+            // Move the borrowed/owned Cow into an owned String once, here.
+            subject_text: Some(fact.subject.into_owned()),
             subject_concept_id: None,
-            predicate: Some(fact.predicate.clone()),
+            predicate: Some(fact.predicate.into_owned()),
             object_text: None,
-            value_json: Some(fact.value.clone()),
+            value_json: Some(fact.value),
             unit: None,
             confidence: 1.0,
-            authority: authority_for(&fact.predicate, path),
+            authority,
             valid_from: None,
             valid_to: None,
             extraction_method: ExtractionMethod::Deterministic,
@@ -164,7 +260,13 @@ fn build_file(path: &Path) -> Option<FileBuild> {
         };
         evidence.push((span, item));
     }
-    Some(FileBuild { artifact, evidence })
+    FileBuild { artifact, evidence }
+}
+
+/// An empty JSON object that does not allocate (serde's `Map::new` is lazy).
+/// Cheaper than `serde_json::json!({})` in the per-span hot path.
+fn empty_json() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
 }
 
 fn hex_sha256(s: &str) -> String {

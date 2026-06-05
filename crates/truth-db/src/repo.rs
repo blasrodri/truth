@@ -78,6 +78,84 @@ pub fn insert_evidence(conn: &Connection, e: &EvidenceItem) -> Result<()> {
     Ok(())
 }
 
+/// Bulk-insert artifacts using one prepared statement reused per row. Caller is
+/// responsible for wrapping this in a transaction. Much faster than calling
+/// `insert_artifact` in a loop (no per-row statement preparation).
+pub fn insert_artifacts(conn: &Connection, items: &[&Artifact]) -> Result<()> {
+    let mut stmt = conn.prepare_cached(
+        "INSERT OR REPLACE INTO artifacts
+         (id, source, kind, uri, external_id, hash, authored_at, observed_at, author, metadata_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+    )?;
+    for a in items {
+        stmt.execute(params![
+            a.id,
+            a.source.as_db_str(),
+            a.kind.as_db_str(),
+            a.uri,
+            a.external_id,
+            a.hash,
+            a.authored_at,
+            a.observed_at,
+            a.author,
+            js(&a.metadata_json),
+        ])?;
+    }
+    Ok(())
+}
+
+/// Bulk-insert spans. Caller wraps in a transaction.
+pub fn insert_spans(conn: &Connection, items: &[&Span]) -> Result<()> {
+    let mut stmt = conn.prepare_cached(
+        "INSERT OR REPLACE INTO spans
+         (id, artifact_id, text, start_line, end_line, start_byte, end_byte, metadata_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+    )?;
+    for s in items {
+        stmt.execute(params![
+            s.id,
+            s.artifact_id,
+            s.text,
+            s.start_line,
+            s.end_line,
+            s.start_byte,
+            s.end_byte,
+            js(&s.metadata_json),
+        ])?;
+    }
+    Ok(())
+}
+
+/// Bulk-insert evidence items. Caller wraps in a transaction.
+pub fn insert_evidence_items(conn: &Connection, items: &[&EvidenceItem]) -> Result<()> {
+    let mut stmt = conn.prepare_cached(
+        "INSERT OR REPLACE INTO evidence_items
+         (id, span_id, evidence_type, subject_text, subject_concept_id, predicate, object_text,
+          value_json, unit, confidence, authority, valid_from, valid_to, extraction_method, metadata_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+    )?;
+    for e in items {
+        stmt.execute(params![
+            e.id,
+            e.span_id,
+            e.evidence_type.as_db_str(),
+            e.subject_text,
+            e.subject_concept_id,
+            e.predicate,
+            e.object_text,
+            e.value_json.as_ref().map(|v| v.to_string()),
+            e.unit,
+            e.confidence,
+            e.authority.as_db_str(),
+            e.valid_from,
+            e.valid_to,
+            e.extraction_method.as_db_str(),
+            js(&e.metadata_json),
+        ])?;
+    }
+    Ok(())
+}
+
 pub fn insert_check(conn: &Connection, c: &Check) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO checks
@@ -350,5 +428,34 @@ pub fn clear_repo_evidence(conn: &Connection) -> Result<()> {
          DELETE FROM artifacts WHERE source IN ('git_repo','local_logs');",
     )
     .context("clearing repo evidence")?;
+    Ok(())
+}
+
+/// Map of indexed repo-file `uri -> (artifact_id, hash)`, used by incremental
+/// indexing to detect unchanged / changed / deleted files.
+pub fn repo_file_hashes(conn: &Connection) -> Result<std::collections::HashMap<String, (String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT uri, id, hash FROM artifacts WHERE source = 'git_repo' AND hash IS NOT NULL",
+    )?;
+    let mut map = std::collections::HashMap::new();
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+    })?;
+    for row in rows {
+        let (uri, id, hash) = row?;
+        map.insert(uri, (id, hash));
+    }
+    Ok(map)
+}
+
+/// Delete a single repo file's artifact and all its spans/evidence by artifact
+/// id (used when a file changed or was removed). Caller wraps in a transaction.
+pub fn delete_artifact_cascade(conn: &Connection, artifact_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM evidence_items WHERE span_id IN (SELECT id FROM spans WHERE artifact_id = ?1)",
+        [artifact_id],
+    )?;
+    conn.execute("DELETE FROM spans WHERE artifact_id = ?1", [artifact_id])?;
+    conn.execute("DELETE FROM artifacts WHERE id = ?1", [artifact_id])?;
     Ok(())
 }

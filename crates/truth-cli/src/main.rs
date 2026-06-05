@@ -5,6 +5,12 @@ use truth_cli::{baseline, ci, claims, commands, diff, doctor, eval, explain, ins
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
 
+// Heap profiler (feature `dhat-heap`). When active, writes dhat-heap.json on
+// exit with exact allocation counts/bytes per call site.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[derive(Parser)]
 #[command(
     name = "truth",
@@ -28,6 +34,9 @@ enum Command {
         /// Print indexing throughput and recall statistics.
         #[arg(long)]
         stats: bool,
+        /// Force a full re-index instead of the incremental (skip-unchanged) path.
+        #[arg(long)]
+        full: bool,
     },
     /// Validate local setup and explain readiness.
     Doctor {
@@ -185,6 +194,9 @@ enum DbCommand {
 }
 
 fn main() -> ExitCode {
+    #[cfg(feature = "dhat-heap")]
+    let _dhat = dhat::Profiler::new_heap();
+
     let cli = Cli::parse();
 
     // `ci` owns its exit code policy (0 pass / 1 fail / 2 operational error).
@@ -220,7 +232,7 @@ fn main() -> ExitCode {
 fn run(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Init => commands::init(),
-        Command::Index { path, stats } => commands::index(&path, stats),
+        Command::Index { path, stats, full } => commands::index(&path, stats, full),
         Command::Doctor { json } => doctor::doctor(json),
         Command::Inspect { category, json } => inspect::inspect(category.as_deref(), json),
         Command::Baseline { local_log, json } => baseline::baseline(local_log.as_deref(), json),

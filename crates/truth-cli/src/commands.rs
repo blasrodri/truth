@@ -48,11 +48,14 @@ pub fn db_migrate() -> Result<()> {
     Ok(())
 }
 
-/// `truth index <path> [--stats]`
-pub fn index(path: &str, stats_flag: bool) -> Result<()> {
+/// `truth index <path> [--stats] [--full]`
+pub fn index(path: &str, stats_flag: bool, full: bool) -> Result<()> {
     let config = load_config()?;
     let conn = truth_db::open(&config.database.path)?;
-    let stats = truth_indexer::index_repo(&conn, &config.repo, Some(Path::new(path)))?;
+    // Incremental by default: unchanged files are skipped. `--full` forces a
+    // clean rebuild.
+    let stats =
+        truth_indexer::index_repo_opts(&conn, &config.repo, Some(Path::new(path)), !full)?;
     println!(
         "Indexed {} files → {} artifacts, {} evidence items.",
         stats.files, stats.artifacts, stats.evidence_items

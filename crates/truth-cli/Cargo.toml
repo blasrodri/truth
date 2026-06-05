@@ -22,3 +22,8 @@ clap.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
 ureq.workspace = true
+dhat = { version = "0.3", optional = true }
+
+[features]
+# Heap profiling: build with `--features dhat-heap` and set TRUTH_PROFILE_HEAP=1.
+dhat-heap = ["dep:dhat"]

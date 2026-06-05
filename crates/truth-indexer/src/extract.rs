@@ -3,21 +3,29 @@
 //! and dependencies across Rust / TypeScript / Python / Go and common manifests.
 //! No full code understanding.
 
-use regex::{Regex, RegexSet};
+use regex::Regex;
 use std::path::Path;
 use std::sync::OnceLock;
 
+use std::borrow::Cow;
+
 /// One extracted fact, before it is turned into a stored `EvidenceItem`.
+///
+/// Borrows from the file contents wherever possible (`'a`): `subject` and `text`
+/// are slices of the source line, and `predicate` is almost always a `&'static`
+/// literal. The downstream consumer allocates owned `String`s once when building
+/// the DB row, so extraction itself stays allocation-light (this is the hottest
+/// loop in indexing).
 #[derive(Debug, Clone, PartialEq)]
-pub struct Extracted {
-    /// Subject string (route, env var, dependency name) or a constant key.
-    pub subject: String,
-    /// Predicate: route_exists, port, retry_count, timeout, env_var_exists, dependency_exists, config_value.
-    pub predicate: String,
+pub struct Extracted<'a> {
+    /// Subject (route, env var, dependency name) or a constant key.
+    pub subject: Cow<'a, str>,
+    /// Predicate: route_exists, port, retry_count, timeout, env_var_exists, dependency_exists.
+    pub predicate: Cow<'static, str>,
     /// JSON value: bool for existence, number for constants/ports.
     pub value: serde_json::Value,
     pub line: u32,
-    pub text: String,
+    pub text: &'a str,
 }
 
 // Pattern source strings, defined once and used for BOTH the individual
@@ -39,15 +47,6 @@ const RE_ENV_VAR: &str = r#"(?x)
     "#;
 const RE_COMPOSE_PORT: &str = r#"^\s*-\s*["']?(\d{2,5}):\d{2,5}["']?\s*$"#;
 
-// RegexSet member indices (must match the slice order in `RegexSet::new`).
-const SET_ROUTE: usize = 0;
-const SET_PORT: usize = 1;
-const SET_RETRY: usize = 2;
-const SET_TIMEOUT: usize = 3;
-const SET_NAMED_CONST: usize = 4;
-const SET_ENV_VAR: usize = 5;
-const SET_COMPOSE_PORT: usize = 6;
-
 struct Pats {
     route: Regex,
     port: Regex,
@@ -56,9 +55,6 @@ struct Pats {
     named_const: Regex,
     env_var: Regex,
     compose_port: Regex,
-    /// Combined automaton: one pass per line decides which patterns can match,
-    /// so we only run the (expensive) capturing regexes on lines that hit.
-    set: RegexSet,
 }
 
 fn pats() -> &'static Pats {
@@ -71,16 +67,6 @@ fn pats() -> &'static Pats {
         named_const: Regex::new(RE_NAMED_CONST).unwrap(),
         env_var: Regex::new(RE_ENV_VAR).unwrap(),
         compose_port: Regex::new(RE_COMPOSE_PORT).unwrap(),
-        set: RegexSet::new([
-            RE_ROUTE,
-            RE_PORT,
-            RE_RETRY,
-            RE_TIMEOUT,
-            RE_NAMED_CONST,
-            RE_ENV_VAR,
-            RE_COMPOSE_PORT,
-        ])
-        .unwrap(),
     })
 }
 
@@ -107,8 +93,8 @@ fn line_may_match(line: &str) -> bool {
     lower_has("env") || lower_has("getenv")
 }
 
-/// Extract facts from one file's contents.
-pub fn extract_file(path: &Path, contents: &str) -> Vec<Extracted> {
+/// Extract facts from one file's contents. Facts borrow from `contents`.
+pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
     let mut out = Vec::new();
     let p = pats();
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -122,60 +108,62 @@ pub fn extract_file(path: &Path, contents: &str) -> Vec<Extracted> {
         }
         let line_no = (i + 1) as u32;
 
-        // One combined pass tells us which patterns can match this line; we only
-        // run the capturing regexes that actually hit.
-        let m = p.set.matches(line);
-        if !m.matched_any() {
-            continue;
-        }
-
-        if m.matched(SET_ROUTE) {
+        // Gate each pattern with `is_match` (allocation-free — uses the regex
+        // crate's internal pool) and only run `captures` (which allocates a
+        // `Captures`) on lines that actually hit. This avoids the per-line
+        // `RegexSet::matches` allocation, which dominated the heap profile.
+        if p.route.is_match(line) {
             for c in p.route.captures_iter(line) {
-                out.push(fact(&c[1], "route_exists", serde_json::Value::Bool(true), line_no, line));
+                let route = group(line, &c, 1);
+                out.push(fact(route, "route_exists", serde_json::Value::Bool(true), line_no, line));
             }
         }
         let mut specific = false;
-        if m.matched(SET_RETRY) {
+        if p.retry.is_match(line) {
             if let Some(c) = p.retry.captures(line) {
                 // Keyed by the canonical predicate (`retry_count`) so the verdict
                 // engine finds it, and by the original identifier name as subject
-                // so `truth config <NAME>` can find it.
-                push_num(&mut out, &c[1], "retry_count", &c[2], line_no, line);
+                // so `truth config <NAME>` can find it. Group spans borrow `line`.
+                let (name, val) = (group(line, &c, 1), group(line, &c, 2));
+                push_num(&mut out, name, Cow::Borrowed("retry_count"), val, line_no, line);
                 specific = true;
             }
         }
-        if m.matched(SET_TIMEOUT) {
+        if p.timeout.is_match(line) {
             if let Some(c) = p.timeout.captures(line) {
-                push_num(&mut out, &c[1], "timeout", &c[2], line_no, line);
+                let (name, val) = (group(line, &c, 1), group(line, &c, 2));
+                push_num(&mut out, name, Cow::Borrowed("timeout"), val, line_no, line);
                 specific = true;
             }
         }
-        if m.matched(SET_PORT) {
+        if p.port.is_match(line) {
             if let Some(c) = p.port.captures(line) {
-                push_num(&mut out, "port", "port", &c[1], line_no, line);
+                push_num(&mut out, "port", Cow::Borrowed("port"), group(line, &c, 1), line_no, line);
                 specific = true;
             }
-        } else if m.matched(SET_COMPOSE_PORT) {
+        } else if p.compose_port.is_match(line) {
             if let Some(c) = p.compose_port.captures(line) {
                 // Published host port in a docker-compose `ports:` list.
-                push_num(&mut out, "port", "port", &c[1], line_no, line);
+                push_num(&mut out, "port", Cow::Borrowed("port"), group(line, &c, 1), line_no, line);
                 specific = true;
             }
         }
         // Generic UPPER_SNAKE / Go-style named numeric constants, keyed by name.
         // Skipped when a more specific predicate (retry/timeout/port) already fired.
-        if !specific && m.matched(SET_NAMED_CONST) {
+        if !specific && p.named_const.is_match(line) {
             if let Some(c) = p.named_const.captures(line) {
-                let name = &c[1];
+                let name = group(line, &c, 1);
                 if is_constish(name) {
-                    push_num(&mut out, name, &name.to_uppercase(), &c[2], line_no, line);
+                    let val = group(line, &c, 2);
+                    push_num(&mut out, name, Cow::Owned(name.to_uppercase()), val, line_no, line);
                 }
             }
         }
-        if m.matched(SET_ENV_VAR) {
+        if p.env_var.is_match(line) {
             for c in p.env_var.captures_iter(line) {
                 // Pick whichever alternative group matched.
-                if let Some(name) = (1..=5).filter_map(|g| c.get(g)).map(|m| m.as_str()).next() {
+                if let Some(g) = (1..=5).find(|g| c.get(*g).is_some()) {
+                    let name = group(line, &c, g);
                     out.push(fact(name, "env_var_exists", serde_json::Value::Bool(true), line_no, line));
                 }
             }
@@ -199,13 +187,31 @@ pub fn extract_file(path: &Path, contents: &str) -> Vec<Extracted> {
     out
 }
 
-fn fact(subject: &str, predicate: &str, value: serde_json::Value, line: u32, text: &str) -> Extracted {
+/// Capture group `n` as a slice that borrows the haystack `line` (not the
+/// temporary `Captures`). Empty string if the group is absent.
+fn group<'a>(line: &'a str, caps: &regex::Captures, n: usize) -> &'a str {
+    match caps.get(n) {
+        // `Match::range()` lets us re-slice `line` directly for the right lifetime.
+        Some(m) => &line[m.start()..m.end()],
+        None => "",
+    }
+}
+
+/// Build a fact that borrows its subject/text from the source line. `predicate`
+/// is a `&'static` literal. No heap allocation.
+fn fact<'a>(
+    subject: &'a str,
+    predicate: &'static str,
+    value: serde_json::Value,
+    line: u32,
+    text: &'a str,
+) -> Extracted<'a> {
     Extracted {
-        subject: subject.to_string(),
-        predicate: predicate.to_string(),
+        subject: Cow::Borrowed(subject),
+        predicate: Cow::Borrowed(predicate),
         value,
         line,
-        text: text.trim().to_string(),
+        text: text.trim(),
     }
 }
 
@@ -220,23 +226,33 @@ fn is_constish(name: &str) -> bool {
     upper_snake || pascal
 }
 
-fn push_num(out: &mut Vec<Extracted>, subject: &str, predicate: &str, raw: &str, line: u32, text: &str) {
+fn push_num<'a>(
+    out: &mut Vec<Extracted<'a>>,
+    subject: &'a str,
+    predicate: Cow<'static, str>,
+    raw: &str,
+    line: u32,
+    text: &'a str,
+) {
     if let Ok(n) = raw.parse::<i64>() {
         // Avoid duplicate (subject,predicate) facts from overlapping patterns.
-        if out.iter().any(|e| e.subject == subject && e.predicate == predicate && e.line == line) {
+        if out
+            .iter()
+            .any(|e| e.subject == subject && e.predicate == predicate && e.line == line)
+        {
             return;
         }
         out.push(Extracted {
-            subject: subject.into(),
-            predicate: predicate.into(),
+            subject: Cow::Borrowed(subject),
+            predicate,
             value: serde_json::Value::Number(n.into()),
             line,
-            text: text.trim().to_string(),
+            text: text.trim(),
         });
     }
 }
 
-fn extract_cargo_deps(contents: &str) -> Vec<Extracted> {
+fn extract_cargo_deps(contents: &str) -> Vec<Extracted<'_>> {
     let mut out = Vec::new();
     let mut in_deps = false;
     for (i, line) in contents.lines().enumerate() {
@@ -256,7 +272,9 @@ fn extract_cargo_deps(contents: &str) -> Vec<Extracted> {
     out
 }
 
-fn extract_package_json_deps(contents: &str) -> Vec<Extracted> {
+fn extract_package_json_deps(contents: &str) -> Vec<Extracted<'static>> {
+    // package.json parses to an owned Value, so these facts own their strings
+    // (the only extractor that allocates per dependency — rare and small files).
     let mut out = Vec::new();
     let Ok(v) = serde_json::from_str::<serde_json::Value>(contents) else {
         return out;
@@ -264,14 +282,20 @@ fn extract_package_json_deps(contents: &str) -> Vec<Extracted> {
     for key in ["dependencies", "devDependencies"] {
         if let Some(obj) = v.get(key).and_then(|d| d.as_object()) {
             for name in obj.keys() {
-                out.push(fact(name, "dependency_exists", serde_json::Value::Bool(true), 0, &format!("{name} ({key})")));
+                out.push(Extracted {
+                    subject: Cow::Owned(name.clone()),
+                    predicate: Cow::Borrowed("dependency_exists"),
+                    value: serde_json::Value::Bool(true),
+                    line: 0,
+                    text: "",
+                });
             }
         }
     }
     out
 }
 
-fn extract_requirements_txt(contents: &str) -> Vec<Extracted> {
+fn extract_requirements_txt(contents: &str) -> Vec<Extracted<'_>> {
     let mut out = Vec::new();
     for (i, line) in contents.lines().enumerate() {
         let t = line.trim();
@@ -291,7 +315,7 @@ fn extract_requirements_txt(contents: &str) -> Vec<Extracted> {
     out
 }
 
-fn extract_go_mod(contents: &str) -> Vec<Extracted> {
+fn extract_go_mod(contents: &str) -> Vec<Extracted<'_>> {
     let mut out = Vec::new();
     let mut in_block = false;
     for (i, line) in contents.lines().enumerate() {
