@@ -6,6 +6,7 @@ members = [
     "crates/truth-indexer",
     "crates/truth-logs",
     "crates/truth-llm",
+    "crates/truth-git",
     "crates/truth-cli",
 ]
 
@@ -39,3 +40,4 @@ truth-db = { path = "crates/truth-db" }
 truth-indexer = { path = "crates/truth-indexer" }
 truth-logs = { path = "crates/truth-logs" }
 truth-llm = { path = "crates/truth-llm" }
+truth-git = { path = "crates/truth-git" }

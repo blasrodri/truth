@@ -258,6 +258,13 @@ fn run_repo_query(
                     unit: None,
                     citation: uri_line_opt(it),
                 });
+                // Git recency: when the route's file exists, surface when it was
+                // last changed — "the file hasn't changed since X" strengthens a
+                // "nobody uses it" verdict. Lazy, per-check; no-ops outside git.
+                if let Some((line, j)) = git_recency_for(it) {
+                    lines.push(line);
+                    json.push(j);
+                }
             }
             found
         }
@@ -366,6 +373,32 @@ fn resolve_from_text(
     use truth_core::concept::{ConceptResolver, FuzzyResolver};
     let resolver = FuzzyResolver { threshold: 0.25 };
     Ok(resolver.resolve(text, &route_candidates(conn)?))
+}
+
+/// Git last-modified evidence for the file an item came from. Returns a human
+/// line + structured evidence, or `None` outside a git repo / on any error.
+fn git_recency_for(item: &EvidenceItem) -> Option<(String, EvidenceJson)> {
+    let uri = item.metadata_json.get("uri").and_then(|v| v.as_str())?;
+    let path = std::path::Path::new(uri);
+
+    let history = truth_git::GitHistory::for_file(path);
+    if !history.available() {
+        return None;
+    }
+    let ts = history.last_modified(path)?;
+    let date = chrono::DateTime::from_timestamp(ts, 0)?
+        .format("%Y-%m-%d")
+        .to_string();
+    let line = format!("git: `{uri}` last changed {date}");
+    let j = EvidenceJson {
+        source: "git".into(),
+        kind: "last_modified".into(),
+        subject: Some(uri.to_string()),
+        value: Some(serde_json::Value::String(date)),
+        unit: None,
+        citation: Some(uri.to_string()),
+    };
+    Some((line, j))
 }
 
 fn uri_line_opt(item: &EvidenceItem) -> Option<String> {
