@@ -48,8 +48,8 @@ pub fn db_migrate() -> Result<()> {
     Ok(())
 }
 
-/// `truth index <path>`
-pub fn index(path: &str) -> Result<()> {
+/// `truth index <path> [--stats]`
+pub fn index(path: &str, stats_flag: bool) -> Result<()> {
     let config = load_config()?;
     let conn = truth_db::open(&config.database.path)?;
     let stats = truth_indexer::index_repo(&conn, &config.repo, Some(Path::new(path)))?;
@@ -57,6 +57,15 @@ pub fn index(path: &str) -> Result<()> {
         "Indexed {} files → {} artifacts, {} evidence items.",
         stats.files, stats.artifacts, stats.evidence_items
     );
+    if stats_flag {
+        println!();
+        println!("Files selected:  {}", stats.files);
+        println!("Files read:      {}", stats.files_read);
+        println!("Evidence items:  {}", stats.evidence_items);
+        println!("Evidence/file:   {:.2}", stats.evidence_per_file());
+        println!("Elapsed:         {:.1} ms", stats.elapsed.as_secs_f64() * 1000.0);
+        println!("Throughput:      {:.0} files/sec", stats.files_per_sec());
+    }
     Ok(())
 }
 

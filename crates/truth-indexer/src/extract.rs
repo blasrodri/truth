@@ -3,7 +3,7 @@
 //! and dependencies across Rust / TypeScript / Python / Go and common manifests.
 //! No full code understanding.
 
-use regex::Regex;
+use regex::{Regex, RegexSet};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -20,57 +20,91 @@ pub struct Extracted {
     pub text: String,
 }
 
+// Pattern source strings, defined once and used for BOTH the individual
+// capturing regexes and the combined `RegexSet`, so the two can never drift.
+const RE_ROUTE: &str = r#"["'`](/[A-Za-z0-9_][A-Za-z0-9_/\-.:{}]*)["'`]"#;
+const RE_PORT: &str = r#"(?i)\bport\b"?\s*[:=]\s*"?(\d{2,5})"#;
+const RE_RETRY: &str =
+    r#"(?i)([A-Za-z0-9_]*retr(?:y|ies)[A-Za-z0-9_]*)\s*(?::\s*[A-Za-z0-9_:<>\[\]]+)?\s*[:=]\s*(\d+)"#;
+const RE_TIMEOUT: &str =
+    r#"(?i)([A-Za-z0-9_]*timeout[A-Za-z0-9_]*)\s*(?::\s*[A-Za-z0-9_:<>\[\]]+)?\s*[:=]\s*(\d+)"#;
+const RE_NAMED_CONST: &str =
+    r#"(?:(?:pub\s+)?const|let|export\s+const|var|final|static)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[A-Za-z0-9_:<>\[\]]+)?\s*=\s*(\d+)\b"#;
+const RE_ENV_VAR: &str = r#"(?x)
+    (?:std::)?env::var\s*\(\s*["']([A-Z][A-Z0-9_]+)["']
+    | (?i:os\.)?(?i:getenv)\s*\(\s*["']([A-Z][A-Z0-9_]+)["']
+    | process\.env\.([A-Z][A-Z0-9_]+)
+    | process\.env\[\s*["']([A-Z][A-Z0-9_]+)["']\s*\]
+    | os\.environ\[\s*["']([A-Z][A-Z0-9_]+)["']\s*\]
+    "#;
+const RE_COMPOSE_PORT: &str = r#"^\s*-\s*["']?(\d{2,5}):\d{2,5}["']?\s*$"#;
+
+// RegexSet member indices (must match the slice order in `RegexSet::new`).
+const SET_ROUTE: usize = 0;
+const SET_PORT: usize = 1;
+const SET_RETRY: usize = 2;
+const SET_TIMEOUT: usize = 3;
+const SET_NAMED_CONST: usize = 4;
+const SET_ENV_VAR: usize = 5;
+const SET_COMPOSE_PORT: usize = 6;
+
 struct Pats {
-    /// Any path-like string literal in quotes: "/v1/checkout".
     route: Regex,
     port: Regex,
-    /// CONST-like identifier holding a retry count.
     retry: Regex,
     timeout: Regex,
-    /// Generic UPPER_SNAKE constant assignment: NAME = 5 (with optional type / const/let/export).
     named_const: Regex,
-    /// Env var access across languages.
     env_var: Regex,
-    /// docker-compose published port mapping: - "8080:8080".
     compose_port: Regex,
+    /// Combined automaton: one pass per line decides which patterns can match,
+    /// so we only run the (expensive) capturing regexes on lines that hit.
+    set: RegexSet,
 }
 
 fn pats() -> &'static Pats {
     static P: OnceLock<Pats> = OnceLock::new();
     P.get_or_init(|| Pats {
-        // Quoted path literal. Covers .route("/x"), app.get("/x"), @app.get("/x"),
-        // r.HandleFunc("/x"), router.post("/x").
-        route: Regex::new(r#"["'`](/[A-Za-z0-9_][A-Za-z0-9_/\-.:{}]*)["'`]"#).unwrap(),
-        // `port = 8080`, `"port": 8080`, `port: 8080`. Tolerates a closing key quote.
-        port: Regex::new(r#"(?i)\bport\b"?\s*[:=]\s*"?(\d{2,5})"#).unwrap(),
-        // Identifier containing "retr" then `= N`. Group 1 = identifier, group 2 = value.
-        retry: Regex::new(
-            r#"(?i)([A-Za-z0-9_]*retr(?:y|ies)[A-Za-z0-9_]*)\s*(?::\s*[A-Za-z0-9_:<>\[\]]+)?\s*[:=]\s*(\d+)"#,
-        )
+        route: Regex::new(RE_ROUTE).unwrap(),
+        port: Regex::new(RE_PORT).unwrap(),
+        retry: Regex::new(RE_RETRY).unwrap(),
+        timeout: Regex::new(RE_TIMEOUT).unwrap(),
+        named_const: Regex::new(RE_NAMED_CONST).unwrap(),
+        env_var: Regex::new(RE_ENV_VAR).unwrap(),
+        compose_port: Regex::new(RE_COMPOSE_PORT).unwrap(),
+        set: RegexSet::new([
+            RE_ROUTE,
+            RE_PORT,
+            RE_RETRY,
+            RE_TIMEOUT,
+            RE_NAMED_CONST,
+            RE_ENV_VAR,
+            RE_COMPOSE_PORT,
+        ])
         .unwrap(),
-        timeout: Regex::new(
-            r#"(?i)([A-Za-z0-9_]*timeout[A-Za-z0-9_]*)\s*(?::\s*[A-Za-z0-9_:<>\[\]]+)?\s*[:=]\s*(\d+)"#,
-        )
-        .unwrap(),
-        // export const MAX_RETRIES = 5 | const MaxRetries = 5 | MAX_RETRIES = 5 | pub const MAX_RETRIES: u32 = 5
-        named_const: Regex::new(
-            r#"(?:(?:pub\s+)?const|let|export\s+const|var|final|static)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[A-Za-z0-9_:<>\[\]]+)?\s*=\s*(\d+)\b"#,
-        )
-        .unwrap(),
-        // std::env::var("X") | env::var("X") | getenv("X") | process.env.X | process.env["X"]
-        // | os.environ["X"] | os.getenv("X") | os.Getenv("X")
-        env_var: Regex::new(
-            r#"(?x)
-            (?:std::)?env::var\s*\(\s*["']([A-Z][A-Z0-9_]+)["']
-            | (?i:os\.)?(?i:getenv)\s*\(\s*["']([A-Z][A-Z0-9_]+)["']
-            | process\.env\.([A-Z][A-Z0-9_]+)
-            | process\.env\[\s*["']([A-Z][A-Z0-9_]+)["']\s*\]
-            | os\.environ\[\s*["']([A-Z][A-Z0-9_]+)["']\s*\]
-            "#,
-        )
-        .unwrap(),
-        compose_port: Regex::new(r#"^\s*-\s*["']?(\d{2,5}):\d{2,5}["']?\s*$"#).unwrap(),
     })
+}
+
+/// Cheap byte prefilter: a line can only match a pattern if it contains a digit
+/// (every numeric pattern), a quote (route/env string literals), or the bytes
+/// `env`/`getenv` (the quote-less env-var forms). Lines with none are skipped
+/// before any regex runs — the vast majority of source lines.
+fn line_may_match(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut has_signal = false;
+    for &b in bytes {
+        if b.is_ascii_digit() || b == b'"' || b == b'\'' || b == b'`' {
+            has_signal = true;
+            break;
+        }
+    }
+    if has_signal {
+        return true;
+    }
+    // Quote-less env forms: process.env.X / os.environ / getenv. Cheap contains.
+    let lower_has = |needle: &str| line.as_bytes().windows(needle.len()).any(|w| {
+        w.eq_ignore_ascii_case(needle.as_bytes())
+    });
+    lower_has("env") || lower_has("getenv")
 }
 
 /// Extract facts from one file's contents.
@@ -81,34 +115,56 @@ pub fn extract_file(path: &Path, contents: &str) -> Vec<Extracted> {
     let fname = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
 
     for (i, line) in contents.lines().enumerate() {
+        // Cheap byte prefilter skips the overwhelming majority of source lines
+        // (no digit, quote, or env token → cannot match any pattern).
+        if !line_may_match(line) {
+            continue;
+        }
         let line_no = (i + 1) as u32;
 
-        for c in p.route.captures_iter(line) {
-            out.push(fact(&c[1], "route_exists", serde_json::Value::Bool(true), line_no, line));
+        // One combined pass tells us which patterns can match this line; we only
+        // run the capturing regexes that actually hit.
+        let m = p.set.matches(line);
+        if !m.matched_any() {
+            continue;
+        }
+
+        if m.matched(SET_ROUTE) {
+            for c in p.route.captures_iter(line) {
+                out.push(fact(&c[1], "route_exists", serde_json::Value::Bool(true), line_no, line));
+            }
         }
         let mut specific = false;
-        if let Some(c) = p.retry.captures(line) {
-            // Keyed by the canonical predicate (`retry_count`) so the verdict
-            // engine finds it, and by the original identifier name as subject so
-            // `truth config <NAME>` can find it.
-            push_num(&mut out, &c[1], "retry_count", &c[2], line_no, line);
-            specific = true;
+        if m.matched(SET_RETRY) {
+            if let Some(c) = p.retry.captures(line) {
+                // Keyed by the canonical predicate (`retry_count`) so the verdict
+                // engine finds it, and by the original identifier name as subject
+                // so `truth config <NAME>` can find it.
+                push_num(&mut out, &c[1], "retry_count", &c[2], line_no, line);
+                specific = true;
+            }
         }
-        if let Some(c) = p.timeout.captures(line) {
-            push_num(&mut out, &c[1], "timeout", &c[2], line_no, line);
-            specific = true;
+        if m.matched(SET_TIMEOUT) {
+            if let Some(c) = p.timeout.captures(line) {
+                push_num(&mut out, &c[1], "timeout", &c[2], line_no, line);
+                specific = true;
+            }
         }
-        if let Some(c) = p.port.captures(line) {
-            push_num(&mut out, "port", "port", &c[1], line_no, line);
-            specific = true;
-        } else if let Some(c) = p.compose_port.captures(line) {
-            // Published host port in a docker-compose `ports:` list.
-            push_num(&mut out, "port", "port", &c[1], line_no, line);
-            specific = true;
+        if m.matched(SET_PORT) {
+            if let Some(c) = p.port.captures(line) {
+                push_num(&mut out, "port", "port", &c[1], line_no, line);
+                specific = true;
+            }
+        } else if m.matched(SET_COMPOSE_PORT) {
+            if let Some(c) = p.compose_port.captures(line) {
+                // Published host port in a docker-compose `ports:` list.
+                push_num(&mut out, "port", "port", &c[1], line_no, line);
+                specific = true;
+            }
         }
         // Generic UPPER_SNAKE / Go-style named numeric constants, keyed by name.
         // Skipped when a more specific predicate (retry/timeout/port) already fired.
-        if !specific {
+        if !specific && m.matched(SET_NAMED_CONST) {
             if let Some(c) = p.named_const.captures(line) {
                 let name = &c[1];
                 if is_constish(name) {
@@ -116,10 +172,12 @@ pub fn extract_file(path: &Path, contents: &str) -> Vec<Extracted> {
                 }
             }
         }
-        for c in p.env_var.captures_iter(line) {
-            // Pick whichever alternative group matched.
-            if let Some(name) = (1..=5).filter_map(|g| c.get(g)).map(|m| m.as_str()).next() {
-                out.push(fact(name, "env_var_exists", serde_json::Value::Bool(true), line_no, line));
+        if m.matched(SET_ENV_VAR) {
+            for c in p.env_var.captures_iter(line) {
+                // Pick whichever alternative group matched.
+                if let Some(name) = (1..=5).filter_map(|g| c.get(g)).map(|m| m.as_str()).next() {
+                    out.push(fact(name, "env_var_exists", serde_json::Value::Bool(true), line_no, line));
+                }
             }
         }
     }

@@ -25,6 +25,9 @@ enum Command {
         /// Path to index (defaults to ".").
         #[arg(default_value = ".")]
         path: String,
+        /// Print indexing throughput and recall statistics.
+        #[arg(long)]
+        stats: bool,
     },
     /// Validate local setup and explain readiness.
     Doctor {
@@ -217,7 +220,7 @@ fn main() -> ExitCode {
 fn run(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Init => commands::init(),
-        Command::Index { path } => commands::index(&path),
+        Command::Index { path, stats } => commands::index(&path, stats),
         Command::Doctor { json } => doctor::doctor(json),
         Command::Inspect { category, json } => inspect::inspect(category.as_deref(), json),
         Command::Baseline { local_log, json } => baseline::baseline(local_log.as_deref(), json),
