@@ -6,6 +6,7 @@ pub mod config;
 pub mod enums;
 pub mod models;
 pub mod query;
+pub mod report;
 pub mod traits;
 pub mod verdict;
 

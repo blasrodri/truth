@@ -1,0 +1,29 @@
+version: 1
+metadata:
+  name: sample truth claims
+  description: Example claim file (v1) for report / ci / eval over the sample repo.
+
+defaults:
+  repo: examples/sample-repo
+  local_log: examples/sample-logs/api.log
+  env: prod
+  window: 7d
+
+claims:
+  - id: checkout-unused
+    text: nobody uses /v1/checkout anymore
+    severity: warning
+    tags: [usage, checkout]
+    expected_status: contradicted
+
+  - id: retry-count
+    text: we retry payments 3 times
+    severity: warning
+    tags: [billing, config]
+    expected_status: contradicted
+
+  - id: service-port
+    text: the service runs on port 8080
+    severity: info
+    tags: [config]
+    expected_status: supported

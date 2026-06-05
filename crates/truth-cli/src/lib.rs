@@ -3,11 +3,15 @@
 
 pub mod baseline;
 pub mod check;
+pub mod ci;
+pub mod claims;
 pub mod commands;
 pub mod config_util;
 pub mod diagnostics;
+pub mod diff;
 pub mod doctor;
 pub mod eval;
 pub mod explain;
 pub mod inspect;
+pub mod report;
 pub mod service;

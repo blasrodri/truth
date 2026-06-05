@@ -9,10 +9,44 @@ use truth_core::config::Config;
 use truth_core::enums::Trigger;
 
 use crate::check::run_check;
+use truth_core::report::ClaimFile;
 
 #[derive(Debug, Deserialize)]
 pub struct Fixture {
     pub cases: Vec<Case>,
+}
+
+impl Fixture {
+    /// Convert a v1 claim file into eval cases (only claims with an
+    /// `expected_status` are checkable by eval; others are skipped).
+    pub fn from_claim_file(cf: &ClaimFile) -> Fixture {
+        let cases = cf
+            .claims
+            .iter()
+            .filter_map(|c| {
+                let expected = c.expected_status.clone()?;
+                Some(Case {
+                    name: c.id.clone(),
+                    question: c.text.clone(),
+                    repo: c.repo.clone().or_else(|| cf.defaults.repo.clone()),
+                    local_log: c.local_log.clone().or_else(|| cf.defaults.local_log.clone()),
+                    expected_status: expected,
+                })
+            })
+            .collect();
+        Fixture { cases }
+    }
+}
+
+/// Parse a fixture file, accepting either the old `cases:` format or the new
+/// `claims:` claim-file format.
+pub fn load_fixture(text: &str) -> Result<Fixture> {
+    // Prefer the explicit `cases:` format; fall back to the claim-file format.
+    if let Ok(f) = serde_yaml::from_str::<Fixture>(text) {
+        return Ok(f);
+    }
+    let cf = ClaimFile::from_yaml(text).context("fixture is neither a `cases:` nor `claims:` file")?;
+    Ok(Fixture::from_claim_file(&cf))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -152,8 +186,7 @@ pub fn eval(fixture_path: &str, json: bool, record: Option<&str>, force: bool) -
     let config = load_config()?;
     let text = std::fs::read_to_string(fixture_path)
         .with_context(|| format!("reading fixture {fixture_path}"))?;
-    let fixture: Fixture =
-        serde_yaml::from_str(&text).with_context(|| format!("parsing fixture {fixture_path}"))?;
+    let fixture = load_fixture(&text).with_context(|| format!("parsing fixture {fixture_path}"))?;
 
     // Eval forces the offline log path (deterministic, no network).
     let mut config = config;

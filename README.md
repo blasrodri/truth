@@ -50,6 +50,10 @@ latest     Find latest occurrence of a pattern
 config     Search indexed config/code definitions
 explain    Explain a previous check from the audit trail
 eval       Run an evaluation fixture (YAML); --record captures a baseline
+claims     Extract candidate claims from docs/text into a claim file
+report     Run checks from a claim file and produce a report
+ci         Run checks from a claim file and exit per a fail policy
+diff       Compare two reports or recorded outputs
 db         Database commands (migrate)
 serve      Placeholder for future Slack/server mode
 ```
@@ -74,6 +78,72 @@ precedence over Loki, so the demo works regardless of `[loki] enabled`.
 `truth eval <fixture> --record <out.yaml>` captures actual outputs as a recorded
 baseline fixture (refuses to overwrite without `--force`) — useful for building a
 regression corpus from real repos.
+
+## Claim files, reports, and CI
+
+A **claim file** is a reviewable YAML list of engineering claims that powers
+`report`, `ci`, and `eval`:
+
+```yaml
+version: 1
+defaults:
+  repo: .
+  local_log: examples/sample-logs/api.log
+  window: 7d
+claims:
+  - id: checkout-unused
+    text: nobody uses /v1/checkout anymore
+    severity: warning          # info | warning | error
+    tags: [usage, checkout]
+    expected_status: contradicted   # optional; used by eval
+```
+
+Generate a starter claim file from your docs (deterministic; LLM optional, never
+required), then **review and edit it by hand**:
+
+```bash
+truth claims README.md docs/ --out .truth/claims.yaml
+```
+
+Run the claims and produce a report (text / markdown / json). `report` never
+fails because a claim is contradicted — it is a reporting command (exit 0 unless
+something operational breaks):
+
+```bash
+truth report .truth/claims.yaml --local-log app.log --format markdown --out truth-report.md
+truth report .truth/claims.yaml --local-log app.log --format json     --out truth-report.json
+```
+
+Gate CI on a policy. Exit codes: `0` pass, `1` policy failed, `2` operational
+error. The default only fails on `contradicted` claims with `severity: error`,
+so adoption is painless; tighten it as you go:
+
+```bash
+truth ci .truth/claims.yaml --local-log app.log --fail-on contradicted --fail-severity warning
+```
+
+Track regressions between two runs (report JSON or recorded eval YAML):
+
+```bash
+truth diff old-report.json new-report.json
+truth diff old-report.json new-report.json --json
+```
+
+## Dogfooding loop
+
+```bash
+truth init
+truth index .
+truth inspect
+truth claims README.md docs/ --out .truth/claims.yaml
+# manually review / edit .truth/claims.yaml
+truth report .truth/claims.yaml --local-log path/to/log --format markdown --out truth-report.md
+truth ci .truth/claims.yaml --local-log path/to/log --fail-on contradicted --fail-severity warning
+```
+
+No Slack and no LLM are needed. Claim files are meant to be reviewed and
+committed. Reports are plain markdown/JSON suitable for CI artifacts or (later)
+PR comments.
 
 ## Quick start (offline demo)
 
