@@ -46,6 +46,9 @@ const RE_ENV_VAR: &str = r#"(?x)
     | os\.environ\[\s*["']([A-Z][A-Z0-9_]+)["']\s*\]
     "#;
 const RE_COMPOSE_PORT: &str = r#"^\s*-\s*["']?(\d{2,5}):\d{2,5}["']?\s*$"#;
+// C/C++/Obj-C preprocessor numeric constant: `#define NAME 5` / `#define NAME 0x1F`.
+// Group 1 = name, group 2 = value. No `=` (the C idiom the other patterns miss).
+const RE_CDEFINE: &str = r#"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s+\(?\s*(\d+|0[xX][0-9a-fA-F]+)\b"#;
 
 struct Pats {
     route: Regex,
@@ -55,6 +58,7 @@ struct Pats {
     named_const: Regex,
     env_var: Regex,
     compose_port: Regex,
+    cdefine: Regex,
 }
 
 fn pats() -> &'static Pats {
@@ -67,7 +71,23 @@ fn pats() -> &'static Pats {
         named_const: Regex::new(RE_NAMED_CONST).unwrap(),
         env_var: Regex::new(RE_ENV_VAR).unwrap(),
         compose_port: Regex::new(RE_COMPOSE_PORT).unwrap(),
+        cdefine: Regex::new(RE_CDEFINE).unwrap(),
     })
+}
+
+/// Classify a `#define`/const name into a canonical predicate by keyword, so a
+/// retry/timeout/port macro is keyed the same way as its `=`-form siblings.
+fn predicate_for_name(name: &str) -> Cow<'static, str> {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("retr") {
+        Cow::Borrowed("retry_count")
+    } else if lower.contains("timeout") {
+        Cow::Borrowed("timeout")
+    } else if lower.contains("port") {
+        Cow::Borrowed("port")
+    } else {
+        Cow::Owned(name.to_uppercase())
+    }
 }
 
 /// Cheap byte prefilter: a line can only match a pattern if it contains a digit
@@ -112,6 +132,22 @@ pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
         // crate's internal pool) and only run `captures` (which allocates a
         // `Captures`) on lines that actually hit. This avoids the per-line
         // `RegexSet::matches` allocation, which dominated the heap profile.
+        // C/C++/Obj-C `#define NAME value`. Handled first and exclusively for
+        // the line, since the `=`-form patterns below don't match `#define`.
+        if line.as_bytes().first() == Some(&b'#') || line.trim_start().starts_with('#') {
+            if let Some(c) = p.cdefine.captures(line) {
+                let name = group(line, &c, 1);
+                let raw = group(line, &c, 2);
+                let value = parse_int_lit(raw);
+                if let Some(n) = value {
+                    let predicate = predicate_for_name(name);
+                    // Subject is the macro name (so `truth config NAME` finds it).
+                    push_extracted(&mut out, name, predicate, n, line_no, line);
+                }
+                continue;
+            }
+        }
+
         if p.route.is_match(line) {
             for c in p.route.captures_iter(line) {
                 let route = group(line, &c, 1);
@@ -213,6 +249,37 @@ fn fact<'a>(
         line,
         text: text.trim(),
     }
+}
+
+/// Parse a C integer literal: decimal or `0x`-hex.
+fn parse_int_lit(raw: &str) -> Option<i64> {
+    if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16).ok()
+    } else {
+        raw.parse::<i64>().ok()
+    }
+}
+
+/// Push a fully-formed numeric fact (used by the `#define` path, which has an
+/// already-parsed value and a possibly-owned predicate).
+fn push_extracted<'a>(
+    out: &mut Vec<Extracted<'a>>,
+    subject: &'a str,
+    predicate: Cow<'static, str>,
+    value: i64,
+    line: u32,
+    text: &'a str,
+) {
+    if out.iter().any(|e| e.subject == subject && e.predicate == predicate && e.line == line) {
+        return;
+    }
+    out.push(Extracted {
+        subject: Cow::Borrowed(subject),
+        predicate,
+        value: serde_json::Value::Number(value.into()),
+        line,
+        text: text.trim(),
+    });
 }
 
 /// Treat names that look like constants (UPPER_SNAKE, or Go-style PascalCase
@@ -415,6 +482,37 @@ secret := os.Getenv("STRIPE_SECRET")
         assert!(has_route(&f, "/v1/checkout"));
         assert!(f.iter().any(|e| e.subject == "STRIPE_SECRET" && e.predicate == "env_var_exists"));
         assert!(f.iter().any(|e| e.subject == "MaxRetries" && e.predicate == "retry_count" && e.value == serde_json::json!(5)));
+    }
+
+    #[test]
+    fn c_define_constants_ports_and_hex() {
+        let src = r#"
+#define MAX_RETRIES 5
+#define DMA_TIMEOUT 3000
+#define DEFAULT_PORT 8080
+#define LISTEN_PORT 443
+#define BUF_MASK 0xFF
+char *e = getenv("KERNEL_DEBUG");
+"#;
+        let f = extract_file(&PathBuf::from("net.c"), src);
+        // retry/timeout/port keywords route to canonical predicates...
+        assert!(f.iter().any(|e| e.subject == "MAX_RETRIES" && e.predicate == "retry_count" && e.value == serde_json::json!(5)));
+        assert!(f.iter().any(|e| e.subject == "DMA_TIMEOUT" && e.predicate == "timeout" && e.value == serde_json::json!(3000)));
+        assert!(f.iter().any(|e| e.predicate == "port" && e.value == serde_json::json!(8080)));
+        assert!(f.iter().any(|e| e.predicate == "port" && e.value == serde_json::json!(443)));
+        // ...and a generic macro keeps its name, hex parsed to decimal.
+        assert!(f.iter().any(|e| e.subject == "BUF_MASK" && e.value == serde_json::json!(255)));
+        // getenv works in C too.
+        assert!(f.iter().any(|e| e.subject == "KERNEL_DEBUG" && e.predicate == "env_var_exists"));
+    }
+
+    #[test]
+    fn c_define_with_spacing_variants() {
+        // `# define` with extra spaces, and a parenthesized value.
+        let src = "#  define   FOO_TIMEOUT  900\n# define BAR (12)\n";
+        let f = extract_file(&PathBuf::from("x.h"), src);
+        assert!(f.iter().any(|e| e.subject == "FOO_TIMEOUT" && e.predicate == "timeout" && e.value == serde_json::json!(900)));
+        assert!(f.iter().any(|e| e.subject == "BAR" && e.value == serde_json::json!(12)));
     }
 
     #[test]
