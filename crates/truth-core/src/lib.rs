@@ -2,6 +2,7 @@
 //! traits for the `truth` claim checker.
 
 pub mod claim;
+pub mod concept;
 pub mod config;
 pub mod enums;
 pub mod models;

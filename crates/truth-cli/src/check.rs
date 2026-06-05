@@ -48,7 +48,25 @@ pub fn run_check(
     trigger: Trigger,
     local_log_path: Option<&str>,
 ) -> Result<CheckOutcome> {
-    let claim = truth_llm::extract_claim(config, question);
+    let mut claim = truth_llm::extract_claim(config, question);
+    // Concept resolution: a usage/route claim with no concrete subject (e.g.
+    // "does anyone still use old checkout") gets its subject resolved against the
+    // indexed routes before planning.
+    let mut resolved_note: Option<String> = None;
+    if needs_subject_resolution(&claim) {
+        if let Some(res) = resolve_from_text(conn, question)? {
+            resolved_note = Some(format!(
+                "Interpreted this as `{}` (confidence {:.0}%).",
+                res.label,
+                res.confidence * 100.0
+            ));
+            claim.subject = Some(res.label);
+            claim.is_checkable = true;
+            if claim.claim_type == truth_core::claim::ClaimType::Unknown {
+                claim.claim_type = truth_core::claim::ClaimType::UsageCount;
+            }
+        }
+    }
     let question_type = question_type_for(claim.claim_type);
 
     let check = Check {
@@ -89,12 +107,17 @@ pub fn run_check(
         }
     }
 
-    let decision = decide(&VerdictInput {
+    let mut decision = decide(&VerdictInput {
         claim: &claim,
         items: &repo_items,
         query_results: &query_results,
         usage_threshold: 0,
     });
+    // Surface the concept interpretation so the user can confirm it (conservative
+    // UX — we never silently substitute a different subject).
+    if let Some(note) = &resolved_note {
+        decision.caveats.insert(0, note.clone());
+    }
 
     let response_text = render(&ResponseInput {
         claim_text: question,
@@ -205,8 +228,22 @@ fn run_repo_query(
 
     let items = match pq.query_type {
         QueryType::RouteExists => {
-            let subj = needle.unwrap_or_default();
-            let items = truth_db::repo::evidence_by_subject(conn, &subj)?;
+            let mut subj = needle.unwrap_or_default();
+            let mut items = truth_db::repo::evidence_by_subject(conn, &subj)?;
+            // Concept resolution: if the literal subject isn't an indexed route,
+            // try to resolve a fuzzy subject ("old checkout") to the nearest one.
+            if !items.iter().any(|i| i.predicate.as_deref() == Some("route_exists")) {
+                if let Some(res) = resolve_route(conn, &subj)? {
+                    lines.push(format!(
+                        "resolved `{}` → `{}` (confidence {:.0}%)",
+                        subj,
+                        res.label,
+                        res.confidence * 100.0
+                    ));
+                    subj = res.label;
+                    items = truth_db::repo::evidence_by_subject(conn, &subj)?;
+                }
+            }
             let found: Vec<EvidenceItem> = items
                 .into_iter()
                 .filter(|i| i.predicate.as_deref() == Some("route_exists"))
@@ -265,6 +302,51 @@ fn run_repo_query(
     };
 
     Ok((items, lines, json))
+}
+
+/// Indexed route subjects, deduped, as resolver candidates.
+fn route_candidates(conn: &Connection) -> Result<Vec<truth_core::concept::Candidate>> {
+    Ok(truth_db::repo::all_evidence(conn)?
+        .into_iter()
+        .filter(|i| i.predicate.as_deref() == Some("route_exists"))
+        .filter_map(|i| i.subject_text)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(truth_core::concept::Candidate::new)
+        .collect())
+}
+
+/// Resolve a fuzzy route subject to the nearest indexed route, if confident.
+fn resolve_route(
+    conn: &Connection,
+    subject: &str,
+) -> Result<Option<truth_core::concept::Resolution>> {
+    use truth_core::concept::{ConceptResolver, FuzzyResolver};
+    Ok(FuzzyResolver::default().resolve(subject, &route_candidates(conn)?))
+}
+
+/// Whether a claim lacks a concrete subject we can act on, so concept resolution
+/// against indexed routes is worth attempting.
+fn needs_subject_resolution(claim: &truth_core::claim::StructuredClaim) -> bool {
+    use truth_core::claim::ClaimType;
+    let no_subject = claim.subject.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
+    no_subject
+        && matches!(
+            claim.claim_type,
+            ClaimType::UsageCount | ClaimType::RouteExists | ClaimType::Unknown
+        )
+}
+
+/// Resolve a whole claim phrase ("does anyone still use old checkout") to an
+/// indexed route, using a slightly higher bar than the route-query fallback to
+/// avoid spurious interpretations.
+fn resolve_from_text(
+    conn: &Connection,
+    text: &str,
+) -> Result<Option<truth_core::concept::Resolution>> {
+    use truth_core::concept::{ConceptResolver, FuzzyResolver};
+    let resolver = FuzzyResolver { threshold: 0.25 };
+    Ok(resolver.resolve(text, &route_candidates(conn)?))
 }
 
 fn uri_line_opt(item: &EvidenceItem) -> Option<String> {
