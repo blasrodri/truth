@@ -78,82 +78,134 @@ pub fn insert_evidence(conn: &Connection, e: &EvidenceItem) -> Result<()> {
     Ok(())
 }
 
-/// Bulk-insert artifacts using one prepared statement reused per row. Caller is
-/// responsible for wrapping this in a transaction. Much faster than calling
-/// `insert_artifact` in a loop (no per-row statement preparation).
+use rusqlite::types::Value as SqlValue;
+
+/// Build `INSERT OR REPLACE INTO <table> (<cols>) VALUES (?,?..),(?,?..),...` for
+/// `rows` rows of `ncols` columns each.
+fn multi_row_sql(table: &str, cols: &str, ncols: usize, rows: usize) -> String {
+    let one = format!("({})", vec!["?"; ncols].join(","));
+    let groups = vec![one.as_str(); rows].join(",");
+    format!("INSERT OR REPLACE INTO {table} ({cols}) VALUES {groups}")
+}
+
+/// Insert `items` flattened into `ncols`-wide rows using chunked multi-row
+/// INSERTs (one `execute` per ~`SQLITE_MAX_VARS/ncols` rows instead of per row).
+/// `row_of` pushes one row's column values onto the buffer. Caller wraps in a
+/// transaction.
+fn bulk_insert<T>(
+    conn: &Connection,
+    table: &str,
+    cols: &str,
+    ncols: usize,
+    items: &[T],
+    mut row_of: impl FnMut(&T, &mut Vec<SqlValue>),
+) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    // Stay well under SQLite's default 999-bound-variable limit.
+    let max_rows = (900 / ncols).max(1);
+    let mut buf: Vec<SqlValue> = Vec::with_capacity(max_rows * ncols);
+
+    for chunk in items.chunks(max_rows) {
+        buf.clear();
+        for it in chunk {
+            row_of(it, &mut buf);
+        }
+        let sql = multi_row_sql(table, cols, ncols, chunk.len());
+        let mut stmt = conn.prepare_cached(&sql)?;
+        stmt.execute(rusqlite::params_from_iter(buf.iter()))?;
+    }
+    Ok(())
+}
+
+fn s(v: &str) -> SqlValue {
+    SqlValue::Text(v.to_string())
+}
+fn os(v: &Option<String>) -> SqlValue {
+    match v {
+        Some(x) => SqlValue::Text(x.clone()),
+        None => SqlValue::Null,
+    }
+}
+fn oi(v: Option<i64>) -> SqlValue {
+    v.map(SqlValue::Integer).unwrap_or(SqlValue::Null)
+}
+fn ou(v: Option<u32>) -> SqlValue {
+    v.map(|x| SqlValue::Integer(x as i64)).unwrap_or(SqlValue::Null)
+}
+
+/// Bulk-insert artifacts via chunked multi-row INSERTs. Caller wraps in a tx.
 pub fn insert_artifacts(conn: &Connection, items: &[&Artifact]) -> Result<()> {
-    let mut stmt = conn.prepare_cached(
-        "INSERT OR REPLACE INTO artifacts
-         (id, source, kind, uri, external_id, hash, authored_at, observed_at, author, metadata_json)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-    )?;
-    for a in items {
-        stmt.execute(params![
-            a.id,
-            a.source.as_db_str(),
-            a.kind.as_db_str(),
-            a.uri,
-            a.external_id,
-            a.hash,
-            a.authored_at,
-            a.observed_at,
-            a.author,
-            js(&a.metadata_json),
-        ])?;
-    }
-    Ok(())
+    bulk_insert(
+        conn,
+        "artifacts",
+        "id, source, kind, uri, external_id, hash, authored_at, observed_at, author, metadata_json",
+        10,
+        items,
+        |a, buf| {
+            buf.push(s(&a.id));
+            buf.push(s(a.source.as_db_str()));
+            buf.push(s(a.kind.as_db_str()));
+            buf.push(s(&a.uri));
+            buf.push(os(&a.external_id));
+            buf.push(os(&a.hash));
+            buf.push(oi(a.authored_at));
+            buf.push(SqlValue::Integer(a.observed_at));
+            buf.push(os(&a.author));
+            buf.push(s(&js(&a.metadata_json)));
+        },
+    )
 }
 
-/// Bulk-insert spans. Caller wraps in a transaction.
+/// Bulk-insert spans via chunked multi-row INSERTs. Caller wraps in a tx.
 pub fn insert_spans(conn: &Connection, items: &[&Span]) -> Result<()> {
-    let mut stmt = conn.prepare_cached(
-        "INSERT OR REPLACE INTO spans
-         (id, artifact_id, text, start_line, end_line, start_byte, end_byte, metadata_json)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-    )?;
-    for s in items {
-        stmt.execute(params![
-            s.id,
-            s.artifact_id,
-            s.text,
-            s.start_line,
-            s.end_line,
-            s.start_byte,
-            s.end_byte,
-            js(&s.metadata_json),
-        ])?;
-    }
-    Ok(())
+    bulk_insert(
+        conn,
+        "spans",
+        "id, artifact_id, text, start_line, end_line, start_byte, end_byte, metadata_json",
+        8,
+        items,
+        |sp, buf| {
+            buf.push(s(&sp.id));
+            buf.push(s(&sp.artifact_id));
+            buf.push(s(&sp.text));
+            buf.push(ou(sp.start_line));
+            buf.push(ou(sp.end_line));
+            buf.push(ou(sp.start_byte));
+            buf.push(ou(sp.end_byte));
+            buf.push(s(&js(&sp.metadata_json)));
+        },
+    )
 }
 
-/// Bulk-insert evidence items. Caller wraps in a transaction.
+/// Bulk-insert evidence items via chunked multi-row INSERTs. Caller wraps in a tx.
 pub fn insert_evidence_items(conn: &Connection, items: &[&EvidenceItem]) -> Result<()> {
-    let mut stmt = conn.prepare_cached(
-        "INSERT OR REPLACE INTO evidence_items
-         (id, span_id, evidence_type, subject_text, subject_concept_id, predicate, object_text,
-          value_json, unit, confidence, authority, valid_from, valid_to, extraction_method, metadata_json)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-    )?;
-    for e in items {
-        stmt.execute(params![
-            e.id,
-            e.span_id,
-            e.evidence_type.as_db_str(),
-            e.subject_text,
-            e.subject_concept_id,
-            e.predicate,
-            e.object_text,
-            e.value_json.as_ref().map(|v| v.to_string()),
-            e.unit,
-            e.confidence,
-            e.authority.as_db_str(),
-            e.valid_from,
-            e.valid_to,
-            e.extraction_method.as_db_str(),
-            js(&e.metadata_json),
-        ])?;
-    }
-    Ok(())
+    bulk_insert(
+        conn,
+        "evidence_items",
+        "id, span_id, evidence_type, subject_text, subject_concept_id, predicate, object_text, \
+         value_json, unit, confidence, authority, valid_from, valid_to, extraction_method, metadata_json",
+        15,
+        items,
+        |e, buf| {
+            buf.push(s(&e.id));
+            buf.push(s(&e.span_id));
+            buf.push(s(e.evidence_type.as_db_str()));
+            buf.push(os(&e.subject_text));
+            buf.push(os(&e.subject_concept_id));
+            buf.push(os(&e.predicate));
+            buf.push(os(&e.object_text));
+            buf.push(os(&e.value_json.as_ref().map(|v| v.to_string())));
+            buf.push(os(&e.unit));
+            buf.push(SqlValue::Real(e.confidence as f64));
+            buf.push(s(e.authority.as_db_str()));
+            buf.push(oi(e.valid_from));
+            buf.push(oi(e.valid_to));
+            buf.push(s(e.extraction_method.as_db_str()));
+            buf.push(s(&js(&e.metadata_json)));
+        },
+    )
 }
 
 pub fn insert_check(conn: &Connection, c: &Check) -> Result<()> {

@@ -131,7 +131,8 @@ pub fn index_repo_opts(
     conn.execute_batch(
         "PRAGMA synchronous = OFF;
          PRAGMA journal_mode = MEMORY;
-         PRAGMA temp_store = MEMORY;",
+         PRAGMA temp_store = MEMORY;
+         PRAGMA cache_size = -65536;",
     )?;
 
     // Flatten built files into column vectors for one prepared statement each.
