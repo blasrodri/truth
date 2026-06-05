@@ -13,5 +13,6 @@ pub mod doctor;
 pub mod eval;
 pub mod explain;
 pub mod inspect;
+pub mod owners;
 pub mod report;
 pub mod service;

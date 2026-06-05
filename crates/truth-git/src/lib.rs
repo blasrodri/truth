@@ -6,6 +6,8 @@
 //! command fails, the methods return `None` — a check never fails for lack of
 //! git data.
 
+pub mod owners;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -107,6 +109,45 @@ impl GitHistory {
                 })
             })
             .collect()
+    }
+
+    /// Recent committers of `path`, recency-weighted: more recent and more
+    /// frequent committers rank higher. Returns (author, score, last_date) over
+    /// the last `window` commits touching the file. A heuristic *signal* of who
+    /// has worked on the code — not a claim of responsibility.
+    pub fn recent_committers(&self, path: &Path, window: usize) -> Vec<(String, f32, i64)> {
+        if !self.available {
+            return Vec::new();
+        }
+        let name = match path.file_name() {
+            Some(n) => n.to_string_lossy().into_owned(),
+            None => return Vec::new(),
+        };
+        let fmt = format!("-{window}");
+        let Some(out) = self.git(&["log", &fmt, "--format=%an%x1f%ct", "--", &name]) else {
+            return Vec::new();
+        };
+
+        // Weight each commit by recency rank: 1st (newest)=window, ...=1.
+        let rows: Vec<(&str, i64)> = out
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split('\u{1f}');
+                Some((f.next()?, f.next()?.parse::<i64>().ok()?))
+            })
+            .collect();
+        let n = rows.len();
+        let mut by_author: std::collections::HashMap<String, (f32, i64)> = std::collections::HashMap::new();
+        for (i, (author, ts)) in rows.iter().enumerate() {
+            let weight = (n - i) as f32; // newest gets highest weight
+            let e = by_author.entry((*author).to_string()).or_insert((0.0, *ts));
+            e.0 += weight;
+            e.1 = e.1.max(*ts);
+        }
+        let mut ranked: Vec<(String, f32, i64)> =
+            by_author.into_iter().map(|(a, (s, t))| (a, s, t)).collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked
     }
 
     /// Run a git command in `root`, returning stdout on success.
