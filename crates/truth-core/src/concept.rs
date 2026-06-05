@@ -7,15 +7,29 @@
 //! behind the same `ConceptResolver` trait as a low-confidence fallback.
 
 /// A candidate concept the resolver can match against (an indexed route, env
-/// var, dependency name, ...). `label` is what gets matched and returned.
+/// var, dependency name, ...).
+///
+/// `label` is the canonical identity returned on a match (e.g. `/v1/checkout`).
+/// `search_text` is what the resolver actually matches against — by default the
+/// label itself, but for routes it should be the enriched human description
+/// ("checkout handle checkout legacy flow"), since identifiers like
+/// `/v1/checkout` resolve poorly (especially for embeddings).
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub label: String,
+    pub search_text: String,
 }
 
 impl Candidate {
+    /// Candidate whose match text is the label itself.
     pub fn new(label: impl Into<String>) -> Self {
-        Candidate { label: label.into() }
+        let label = label.into();
+        Candidate { search_text: label.clone(), label }
+    }
+
+    /// Candidate with a distinct human-readable text to match against.
+    pub fn with_search_text(label: impl Into<String>, search_text: impl Into<String>) -> Self {
+        Candidate { label: label.into(), search_text: search_text.into() }
     }
 }
 
@@ -31,11 +45,23 @@ pub trait ConceptResolver {
     fn resolve(&self, subject: &str, candidates: &[Candidate]) -> Option<Resolution>;
 }
 
-/// Split a string into lowercase alphanumeric word tokens (len ≥ 2).
+/// Common English + question stopwords that should not influence matching.
+const STOPWORDS: &[&str] = &[
+    "the", "is", "are", "was", "were", "does", "do", "did", "still", "anyone",
+    "anybody", "any", "use", "uses", "used", "using", "to", "of", "in", "on",
+    "for", "and", "or", "we", "you", "it", "this", "that", "these", "those",
+    "a", "an", "be", "been", "has", "have", "had", "with", "by", "at", "as",
+    "our", "my", "your", "their", "there", "here", "no", "not", "nobody",
+    "someone", "something", "really", "actually", "ever", "old", "new",
+];
+
+/// Split a string into lowercase alphanumeric word tokens (len ≥ 2), dropping
+/// stopwords so noise words in a question ("does anyone still use ...") do not
+/// dilute the similarity score.
 fn tokens(s: &str) -> Vec<String> {
     s.to_lowercase()
         .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|t| t.len() >= 2)
+        .filter(|t| t.len() >= 2 && !STOPWORDS.contains(t))
         .map(|t| t.to_string())
         .collect()
 }
@@ -97,7 +123,8 @@ impl ConceptResolver for FuzzyResolver {
 
         let mut best: Option<(f32, &str)> = None;
         for c in candidates {
-            let s = self.score(&subject_lower, &subject_tokens, &c.label);
+            // Match against the human search text, return the canonical label.
+            let s = self.score(&subject_lower, &subject_tokens, &c.search_text);
             if best.map(|(bs, _)| s > bs).unwrap_or(true) {
                 best = Some((s, &c.label));
             }
@@ -158,5 +185,27 @@ mod tests {
     fn empty_candidates_is_none() {
         let r = FuzzyResolver::default();
         assert!(r.resolve("checkout", &[]).is_none());
+    }
+
+    #[test]
+    fn matches_search_text_returns_canonical_label() {
+        // Enriched candidate: human words in search_text, route in label.
+        let cands = vec![Candidate::with_search_text(
+            "/v1/checkout",
+            "checkout handle legacy shopping cart flow",
+        )];
+        let r = FuzzyResolver::default();
+        // "shopping cart" shares no tokens with the route path, only with the
+        // enriched search text — yet we get the canonical route back.
+        let got = r.resolve("does anyone use the shopping cart", &cands);
+        assert_eq!(got.map(|x| x.label).as_deref(), Some("/v1/checkout"));
+    }
+
+    #[test]
+    fn stopwords_do_not_dilute_match() {
+        let cands = vec![Candidate::new("/auth/login")];
+        let r = FuzzyResolver::default();
+        // The question wrapper words are ignored; "login" still matches.
+        assert!(r.resolve("is anyone still using the login", &cands).is_some());
     }
 }

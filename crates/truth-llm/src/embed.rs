@@ -51,7 +51,8 @@ impl ConceptResolver for EmbeddingResolver {
         }
         let mut texts: Vec<String> = Vec::with_capacity(candidates.len() + 1);
         texts.push(subject.to_string());
-        texts.extend(candidates.iter().map(|c| c.label.clone()));
+        // Embed the human search text (enriched label), not the raw identifier.
+        texts.extend(candidates.iter().map(|c| c.search_text.clone()));
 
         let vecs = self.embed(&texts);
         let (subject_vec, cand_vecs) = vecs.split_first()?;

@@ -304,15 +304,34 @@ fn run_repo_query(
     Ok((items, lines, json))
 }
 
-/// Indexed route subjects, deduped, as resolver candidates.
+/// Indexed routes as resolver candidates. The canonical label is the route
+/// path; the search text is the enriched human description (`object_text`, e.g.
+/// "checkout handle checkout legacy flow") when available — that's what makes
+/// fuzzy/embedding resolution match human phrasing.
 fn route_candidates(conn: &Connection) -> Result<Vec<truth_core::concept::Candidate>> {
-    Ok(truth_db::repo::all_evidence(conn)?
+    use std::collections::BTreeMap;
+    let mut by_route: BTreeMap<String, String> = BTreeMap::new();
+    for i in truth_db::repo::all_evidence(conn)? {
+        if i.predicate.as_deref() != Some("route_exists") {
+            continue;
+        }
+        let Some(route) = i.subject_text else { continue };
+        // Accumulate the richest search text seen for this route. Always include
+        // the path words themselves so token-overlap still works.
+        let label = i.object_text.unwrap_or_default();
+        let search = format!("{route} {label}");
+        by_route
+            .entry(route)
+            .and_modify(|s| {
+                if search.len() > s.len() {
+                    *s = search.clone();
+                }
+            })
+            .or_insert(search);
+    }
+    Ok(by_route
         .into_iter()
-        .filter(|i| i.predicate.as_deref() == Some("route_exists"))
-        .filter_map(|i| i.subject_text)
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .map(truth_core::concept::Candidate::new)
+        .map(|(route, search)| truth_core::concept::Candidate::with_search_text(route, search))
         .collect())
 }
 

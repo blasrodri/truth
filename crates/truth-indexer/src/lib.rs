@@ -260,6 +260,14 @@ fn build_from(
             end_byte: None,
             metadata_json: empty_json(),
         };
+        // The enriched human label (e.g. for routes) is stored in `object_text`
+        // — a previously-unused column that exactly fits "human description" —
+        // so concept resolution can read it without parsing JSON.
+        let label = fact.label;
+        let mut metadata = serde_json::json!({ "uri": uri, "line": fact.line });
+        if let Some(l) = &label {
+            metadata["label"] = serde_json::Value::String(l.clone());
+        }
         let item = EvidenceItem {
             id: new_id(),
             span_id: span.id.clone(),
@@ -268,7 +276,7 @@ fn build_from(
             subject_text: Some(fact.subject.into_owned()),
             subject_concept_id: None,
             predicate: Some(fact.predicate.into_owned()),
-            object_text: None,
+            object_text: label,
             value_json: Some(fact.value),
             unit: None,
             confidence: 1.0,
@@ -276,7 +284,7 @@ fn build_from(
             valid_from: None,
             valid_to: None,
             extraction_method: ExtractionMethod::Deterministic,
-            metadata_json: serde_json::json!({ "uri": uri, "line": fact.line }),
+            metadata_json: metadata,
         };
         evidence.push((span, item));
     }

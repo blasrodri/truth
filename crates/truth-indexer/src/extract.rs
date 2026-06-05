@@ -26,6 +26,11 @@ pub struct Extracted<'a> {
     pub value: serde_json::Value,
     pub line: u32,
     pub text: &'a str,
+    /// Humanized, searchable description derived from the surrounding code
+    /// (path words + handler symbol + nearby doc comment). Used for concept
+    /// resolution / embeddings, which need human words, not raw identifiers.
+    /// `None` for facts where the identifier is already human-meaningful.
+    pub label: Option<String>,
 }
 
 // Pattern source strings, defined once and used for BOTH the individual
@@ -120,7 +125,10 @@ pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let fname = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
 
-    for (i, line) in contents.lines().enumerate() {
+    // Materialize lines once so route enrichment can look back for doc comments.
+    let lines: Vec<&str> = contents.lines().collect();
+
+    for (i, line) in lines.iter().copied().enumerate() {
         // Cheap byte prefilter skips the overwhelming majority of source lines
         // (no digit, quote, or env token → cannot match any pattern).
         if !line_may_match(line) {
@@ -157,7 +165,9 @@ pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
                 // route-shaped. Rejects file paths, derivation paths (`/0`,
                 // `/637`), and format strings that dominated false positives.
                 if has_signal || route_shaped(route) {
-                    out.push(fact(route, "route_exists", serde_json::Value::Bool(true), line_no, line));
+                    let mut f = fact(route, "route_exists", serde_json::Value::Bool(true), line_no, line);
+                    f.label = Some(route_label(route, line, &lines, i));
+                    out.push(f);
                 }
             }
         }
@@ -255,6 +265,7 @@ fn fact<'a>(
         value,
         line,
         text: text.trim(),
+        label: None,
     }
 }
 
@@ -322,6 +333,94 @@ fn route_shaped(path: &str) -> bool {
     true
 }
 
+/// Build a humanized, searchable label for a route from its surrounding code:
+/// path words + the handler symbol on the line + words from the nearest doc
+/// comment above. This is what concept resolution / embeddings match against,
+/// because they need human words, not raw identifiers like `/v1/checkout`.
+///
+/// e.g. `/v1/checkout` with handler `handle_checkout` under a `/// Legacy
+/// checkout flow` comment → "checkout handle checkout legacy checkout flow".
+fn route_label(route: &str, line: &str, lines: &[&str], idx: usize) -> String {
+    let mut words: Vec<String> = Vec::new();
+
+    // 1) Path segments as words (skip version tokens and numerics).
+    for seg in route.split('/').filter(|s| !s.is_empty()) {
+        let seg = seg.trim_matches(|c| c == ':' || c == '{' || c == '}');
+        if seg.is_empty() || seg.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if seg.len() == 2 && seg.starts_with('v') && seg[1..].chars().all(|c| c.is_ascii_digit()) {
+            continue; // v1, v2
+        }
+        push_identifier_words(&mut words, seg);
+    }
+
+    // 2) Handler symbol: the identifier just after the route literal, e.g.
+    //    `.post("/x", handle_checkout)` → handle_checkout.
+    if let Some(pos) = line.find(route) {
+        let after = &line[pos + route.len()..];
+        if let Some(handler) = after
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .find(|t| t.len() >= 3 && t.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false))
+        {
+            push_identifier_words(&mut words, handler);
+        }
+    }
+
+    // 3) Nearest doc comment above (//, ///, #, *), up to 3 lines back.
+    for back in 1..=3 {
+        let Some(prev_idx) = idx.checked_sub(back) else { break };
+        let prev = lines[prev_idx].trim();
+        let comment = prev
+            .strip_prefix("///")
+            .or_else(|| prev.strip_prefix("//!"))
+            .or_else(|| prev.strip_prefix("//"))
+            .or_else(|| prev.strip_prefix("* "))
+            .or_else(|| prev.strip_prefix("# "));
+        match comment {
+            Some(text) => {
+                for w in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+                    if w.len() >= 3 && w.chars().any(|c| c.is_ascii_alphabetic()) {
+                        words.push(w.to_lowercase());
+                    }
+                }
+            }
+            None => break, // stop at the first non-comment line
+        }
+    }
+
+    dedup_keep_order(&mut words);
+    words.join(" ")
+}
+
+/// Split an identifier (`handle_checkout`, `handleCheckout`, `HandleCheckout`)
+/// into lowercase words and push them.
+fn push_identifier_words(out: &mut Vec<String>, ident: &str) {
+    let mut cur = String::new();
+    let flush = |cur: &mut String, out: &mut Vec<String>| {
+        if cur.len() >= 2 {
+            out.push(cur.to_lowercase());
+        }
+        cur.clear();
+    };
+    for ch in ident.chars() {
+        if ch == '_' || ch == '-' || ch == '.' {
+            flush(&mut cur, out);
+        } else if ch.is_ascii_uppercase() && !cur.is_empty() {
+            flush(&mut cur, out);
+            cur.push(ch);
+        } else {
+            cur.push(ch);
+        }
+    }
+    flush(&mut cur, out);
+}
+
+fn dedup_keep_order(words: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    words.retain(|w| seen.insert(w.clone()));
+}
+
 /// Parse a C integer literal: decimal or `0x`-hex.
 fn parse_int_lit(raw: &str) -> Option<i64> {
     if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
@@ -350,6 +449,7 @@ fn push_extracted<'a>(
         value: serde_json::Value::Number(value.into()),
         line,
         text: text.trim(),
+        label: None,
     });
 }
 
@@ -403,6 +503,7 @@ fn push_num<'a>(
             value: serde_json::Value::Number(n.into()),
             line,
             text: text.trim(),
+            label: None,
         });
     }
 }
@@ -443,6 +544,7 @@ fn extract_package_json_deps(contents: &str) -> Vec<Extracted<'static>> {
                     value: serde_json::Value::Bool(true),
                     line: 0,
                     text: "",
+                    label: None,
                 });
             }
         }
@@ -570,6 +672,20 @@ secret := os.Getenv("STRIPE_SECRET")
         assert!(has_route(&f, "/v1/checkout"));
         assert!(f.iter().any(|e| e.subject == "STRIPE_SECRET" && e.predicate == "env_var_exists"));
         assert!(f.iter().any(|e| e.subject == "MaxRetries" && e.predicate == "retry_count" && e.value == serde_json::json!(5)));
+    }
+
+    #[test]
+    fn route_enrichment_builds_human_label() {
+        let src = "/// Legacy checkout flow. Deprecated.\nrouter.post(\"/v1/checkout\", handle_checkout);\n";
+        let f = extract_file(&PathBuf::from("routes.rs"), src);
+        let route = f.iter().find(|e| e.subject == "/v1/checkout").expect("route");
+        let label = route.label.as_deref().unwrap_or("");
+        // Path word + handler words + doc-comment words, humanized.
+        assert!(label.contains("checkout"), "label: {label}");
+        assert!(label.contains("handle"), "label: {label}");
+        assert!(label.contains("legacy"), "label: {label}");
+        // Version token v1 and the numeric are dropped.
+        assert!(!label.contains("v1"), "label: {label}");
     }
 
     #[test]
