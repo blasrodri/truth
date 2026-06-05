@@ -91,3 +91,29 @@ indexer is now hardened to the point where this is the binding constraint.
    works from code.
 3. **Tree-sitter spike (high):** 1-2 languages (Rust + one of TS/Python) to prove
    the AST approach, then expand. This is where "trustworthy" lives.
+
+## Addendum: concept resolution (fuzzy vs embeddings) — measured
+
+Resolving a fuzzy claim subject ("old checkout") to an indexed route.
+
+| Approach | Token-overlap queries | Pure-semantic (zero overlap) | Cost | Deps |
+|---|---:|---:|---|---|
+| alias table | 3/6 | 0/4 | ~0 | none (manual) |
+| **fuzzy (shipped)** | **6/6** | 0/4 | ~1us | **none** |
+| embeddings (route paths) | — | **1/4** | model load | model2vec |
+| embeddings (humanized labels) | — | **4/4** | model load | model2vec |
+
+Findings:
+- **Fuzzy handles realistic queries (6/6) for free, deterministically.** Shipped
+  as the default `FuzzyResolver`.
+- **Static embeddings only help if candidates are human words, not route paths.**
+  Embedding `/v1/checkout` directly: 1/4. Embedding "checkout payment order":
+  4/4. Route identifiers tokenize poorly for a distilled embedding model.
+- Implication: embeddings are a real fallback, but they require **enriched
+  concept labels** (route -> human description) to be effective. That enrichment
+  (deriving "checkout payment order" from `/v1/checkout` + its handler/comments)
+  is itself an extraction problem — back to needing better extraction.
+
+`EmbeddingResolver` (model2vec, pure Rust, no candle/onnx) is implemented behind
+the `embeddings` cargo feature, off by default. It is not yet wired into the
+check pipeline pending the concept-enrichment work above.

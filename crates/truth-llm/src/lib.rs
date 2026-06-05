@@ -4,11 +4,15 @@
 //! OpenAI-compatible client is optional and degrades to the regex extractor.
 
 pub mod client;
+#[cfg(feature = "embeddings")]
+pub mod embed;
 pub mod extract;
 pub mod plan;
 pub mod respond;
 
 pub use client::OpenAiCompatibleExtractor;
+#[cfg(feature = "embeddings")]
+pub use embed::EmbeddingResolver;
 pub use extract::{ClaimExtractor, RegexExtractor};
 pub use plan::plan_for;
 pub use respond::{render, ResponseInput};

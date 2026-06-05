@@ -11,3 +11,10 @@ serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
 ureq.workspace = true
+# Static (no-neural-net) embeddings for semantic concept resolution. Pure Rust
+# (tokenizers + safetensors + ndarray), optional. Loads a local model dir.
+model2vec-rs = { version = "0.2", optional = true }
+
+[features]
+# Opt-in semantic concept resolution via static embeddings.
+embeddings = ["dep:model2vec-rs"]
