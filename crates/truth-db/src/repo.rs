@@ -324,6 +324,18 @@ pub fn all_evidence(conn: &Connection) -> Result<Vec<EvidenceItem>> {
     Ok(rows)
 }
 
+/// All indexed repo file URIs (the corpus a reference finder re-reads). Code
+/// files only (git_repo source).
+pub fn repo_file_uris(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT uri FROM artifacts WHERE source = 'git_repo' ORDER BY uri",
+    )?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// Row counts for the three indexable tables (artifacts, spans, evidence).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IndexCounts {

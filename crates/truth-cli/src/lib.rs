@@ -14,5 +14,6 @@ pub mod eval;
 pub mod explain;
 pub mod inspect;
 pub mod owners;
+pub mod refs;
 pub mod report;
 pub mod service;

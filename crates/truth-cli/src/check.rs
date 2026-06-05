@@ -107,6 +107,21 @@ pub fn run_check(
         }
     }
 
+    // Code-reference evidence for usage claims: "nobody uses X" is far stronger
+    // (or refuted) by whether X is referenced anywhere in the indexed code, not
+    // just whether it shows up in logs. Lazy, check-time scan.
+    if matches!(
+        claim.claim_type,
+        truth_core::claim::ClaimType::UsageCount | truth_core::claim::ClaimType::DependencyUsed
+    ) {
+        if let Some(subject) = claim.subject.as_deref() {
+            if let Some((line, j)) = code_reference_evidence(conn, subject)? {
+                evidence_lines.push(line);
+                evidence_json.push(j);
+            }
+        }
+    }
+
     let mut decision = decide(&VerdictInput {
         claim: &claim,
         items: &repo_items,
@@ -373,6 +388,33 @@ fn resolve_from_text(
     use truth_core::concept::{ConceptResolver, FuzzyResolver};
     let resolver = FuzzyResolver { threshold: 0.25 };
     Ok(resolver.resolve(text, &route_candidates(conn)?))
+}
+
+/// Code-reference evidence for a usage subject: how many times it is referenced
+/// in the indexed code (excluding its definition). `None` if not indexed.
+fn code_reference_evidence(
+    conn: &Connection,
+    subject: &str,
+) -> Result<Option<(String, EvidenceJson)>> {
+    let report = crate::refs::build_report(conn, subject)?;
+    // Only attach when we actually scanned code.
+    if report.files_scanned == 0 {
+        return Ok(None);
+    }
+    let line = match report.status.as_str() {
+        "referenced" => format!("code: `{subject}` is referenced {} time(s) in the repo", report.count),
+        "definition_only" => format!("code: `{subject}` is defined but never referenced (dead-code signal)"),
+        _ => format!("code: `{subject}` not found in the indexed code"),
+    };
+    let j = EvidenceJson {
+        source: "code".into(),
+        kind: "reference_count".into(),
+        subject: Some(subject.to_string()),
+        value: Some(report.count.into()),
+        unit: Some("references".into()),
+        citation: report.samples.first().map(|h| format!("{}:{}", h.file, h.line)),
+    };
+    Ok(Some((line, j)))
 }
 
 /// Git last-modified evidence for the file an item came from. Returns a human
