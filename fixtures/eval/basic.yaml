@@ -1,0 +1,22 @@
+cases:
+  - name: unused endpoint contradicted
+    question: nobody uses /v1/checkout anymore
+    repo: examples/sample-repo
+    local_log: examples/sample-logs/api.log
+    expected_status: contradicted
+
+  - name: retry count contradicted
+    question: we retry payments 3 times
+    repo: examples/sample-repo
+    expected_status: contradicted
+
+  - name: service port supported
+    question: the service runs on port 8080
+    repo: examples/sample-repo
+    expected_status: supported
+
+  - name: unknown route inconclusive
+    question: does anyone still use /v9/foo?
+    repo: examples/sample-repo
+    local_log: examples/sample-logs/api.log
+    expected_status: inconclusive

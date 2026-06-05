@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/truth-core",
+    "crates/truth-db",
+    "crates/truth-indexer",
+    "crates/truth-logs",
+    "crates/truth-llm",
+    "crates/truth-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/example/truth"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+rusqlite = { version = "0.39", features = ["bundled"] }
+walkdir = "2"
+sha2 = "0.10"
+clap = { version = "4", features = ["derive"] }
+ureq = { version = "2", features = ["json"] }
+
+# Local crates
+truth-core = { path = "crates/truth-core" }
+truth-db = { path = "crates/truth-db" }
+truth-indexer = { path = "crates/truth-indexer" }
+truth-logs = { path = "crates/truth-logs" }
+truth-llm = { path = "crates/truth-llm" }

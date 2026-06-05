@@ -1,0 +1,46 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+path = ".truth/truth.sqlite"
+
+[repo]
+root = "."
+include = ["src", "docs", "README.md", "Cargo.toml", "package.json", "docker-compose.yml"]
+exclude = ["target", "node_modules", ".git"]
+
+[slack]
+signing_secret_env = "SLACK_SIGNING_SECRET"
+bot_token_env = "SLACK_BOT_TOKEN"
+app_token_env = "SLACK_APP_TOKEN"
+
+[llm]
+provider = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+model = "qwen3:1.7b"
+api_key_env = "LLM_API_KEY"
+timeout_ms = 1500
+# Set to true once an OpenAI-compatible endpoint is reachable. When false,
+# claim extraction uses the deterministic offline extractor.
+enabled = false
+
+[loki]
+enabled = true
+base_url = "http://localhost:3100"
+default_env = "prod"
+default_window = "7d"
+
+[loki.labels]
+env = "env"
+service = "service"
+
+[security]
+max_log_window_days = 30
+include_log_samples = true
+max_log_samples = 3
+redact_pii = true
+allowed_environments = ["prod", "staging"]
+
+[verdict]
+default_confidence_threshold = 0.75

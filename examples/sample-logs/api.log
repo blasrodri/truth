@@ -1,0 +1,8 @@
+2026-06-04T14:00:00Z GET /v1/checkout 200 user alice@example.com
+2026-06-04T14:01:10Z POST /v1/checkout 200 order=550e8400-e29b-41d4-a716-446655440000
+2026-06-04T14:02:30Z POST /v1/checkout 500 timeout connecting to payments
+2026-06-04T14:03:00Z GET /v1/checkout 200 client 192.168.1.42
+2026-06-04T14:04:15Z GET /health 200
+2026-06-04T14:05:00Z POST /webhooks/stripe 500 error webhook_signature_failed
+2026-06-04T14:06:20Z POST /webhooks/stripe 500 error webhook_signature_failed
+2026-06-04T14:07:00Z GET /v2/checkout 200

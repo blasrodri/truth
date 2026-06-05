@@ -1,0 +1,23 @@
+[package]
+name = "truth-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "truth"
+path = "src/main.rs"
+
+[dependencies]
+truth-core.workspace = true
+truth-db.workspace = true
+truth-indexer.workspace = true
+truth-logs.workspace = true
+truth-llm.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+clap.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
