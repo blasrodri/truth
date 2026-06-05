@@ -1,6 +1,6 @@
 //! `truth` CLI — deterministic engineering claim/evidence checker.
 
-use truth_cli::{commands, eval, explain};
+use truth_cli::{baseline, commands, doctor, eval, explain, inspect};
 
 use clap::{Parser, Subcommand};
 
@@ -24,6 +24,25 @@ enum Command {
         /// Path to index (defaults to ".").
         #[arg(default_value = ".")]
         path: String,
+    },
+    /// Validate local setup and explain readiness.
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show what was indexed (summary, or routes/constants/env/ports/deps/evidence).
+    Inspect {
+        /// Optional category to list.
+        category: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run auto-generated baseline checks from indexed evidence + logs.
+    Baseline {
+        #[arg(long)]
+        local_log: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Check a natural-language engineering claim.
     Check {
@@ -95,6 +114,12 @@ enum Command {
         fixture: String,
         #[arg(long)]
         json: bool,
+        /// Record actual outputs to a YAML file instead of asserting.
+        #[arg(long)]
+        record: Option<String>,
+        /// Overwrite the record file if it already exists.
+        #[arg(long)]
+        force: bool,
     },
     /// Database commands.
     Db {
@@ -116,6 +141,9 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Init => commands::init(),
         Command::Index { path } => commands::index(&path),
+        Command::Doctor { json } => doctor::doctor(json),
+        Command::Inspect { category, json } => inspect::inspect(category.as_deref(), json),
+        Command::Baseline { local_log, json } => baseline::baseline(local_log.as_deref(), json),
         Command::Check { claim, local_log, json } => {
             commands::check(&claim, local_log.as_deref(), json)
         }
@@ -145,13 +173,12 @@ fn main() -> anyhow::Result<()> {
         } => commands::latest(&pattern, window.as_deref(), env.as_deref(), service.as_deref(), local_log.as_deref(), json),
         Command::Config { key, json } => commands::config(&key, json),
         Command::Explain { check_id, json } => explain::explain(&check_id, json),
-        Command::Eval { fixture, json } => eval::eval(&fixture, json),
+        Command::Eval { fixture, json, record, force } => {
+            eval::eval(&fixture, json, record.as_deref(), force)
+        }
         Command::Db { cmd } => match cmd {
             DbCommand::Migrate => commands::db_migrate(),
         },
-        Command::Serve => {
-            println!("`truth serve` (Slack/HTTP) is not part of this build.");
-            Ok(())
-        }
+        Command::Serve => commands::serve(),
     }
 }

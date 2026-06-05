@@ -179,6 +179,44 @@ pub fn evidence_matching_key(conn: &Connection, key: &str) -> Result<Vec<Evidenc
     Ok(rows)
 }
 
+/// All indexed evidence items, ordered by predicate then subject. Used by
+/// `inspect` / `baseline` to summarize what the repo contains.
+pub fn all_evidence(conn: &Connection) -> Result<Vec<EvidenceItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, span_id, evidence_type, subject_text, subject_concept_id, predicate, object_text,
+                value_json, unit, confidence, authority, valid_from, valid_to, extraction_method, metadata_json
+         FROM evidence_items
+         ORDER BY predicate, subject_text",
+    )?;
+    let rows = stmt
+        .query_map([], row_to_evidence)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Row counts for the three indexable tables (artifacts, spans, evidence).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IndexCounts {
+    pub artifacts: i64,
+    pub spans: i64,
+    pub evidence_items: i64,
+}
+
+fn count_rows(conn: &Connection, table: &str) -> Result<i64> {
+    // `table` is never user-supplied; it comes from the fixed list below.
+    let sql = format!("SELECT COUNT(*) FROM {table}");
+    Ok(conn.query_row(&sql, [], |r| r.get(0))?)
+}
+
+/// Count rows in artifacts/spans/evidence_items.
+pub fn index_counts(conn: &Connection) -> Result<IndexCounts> {
+    Ok(IndexCounts {
+        artifacts: count_rows(conn, "artifacts")?,
+        spans: count_rows(conn, "spans")?,
+        evidence_items: count_rows(conn, "evidence_items")?,
+    })
+}
+
 /// Fetch a single check by id.
 pub fn get_check(conn: &Connection, check_id: &str) -> Result<Option<Check>> {
     let c = conn

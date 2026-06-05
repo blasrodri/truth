@@ -28,6 +28,18 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
+/// `truth serve` — informational placeholder (exits zero).
+pub fn serve() -> Result<()> {
+    println!("`truth serve` is not implemented yet.\n");
+    println!("The core verifier is available through:");
+    println!("  truth check \"...\"");
+    println!("  truth usage ...");
+    println!("  truth errors ...");
+    println!("  truth eval ...");
+    println!("\nSlack/HTTP mode is planned for a later phase.");
+    Ok(())
+}
+
 /// `truth db migrate`
 pub fn db_migrate() -> Result<()> {
     let config = load_config()?;
@@ -57,6 +69,11 @@ pub fn check(question: &str, local_log: Option<&str>, json: bool) -> Result<()> 
         print_json(&outcome.to_json());
     } else {
         println!("{}", outcome.response_text);
+        // Add actionable guidance when the result was inconclusive, based on
+        // the most likely cause (no index / no logs / unresolved subject).
+        if let Some(hint) = crate::diagnostics::check_hint(&conn, &config, &outcome, local_log)? {
+            println!("\n{hint}");
+        }
         println!("\n(check id: {})", outcome.check_id);
     }
     Ok(())
