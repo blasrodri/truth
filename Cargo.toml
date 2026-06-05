@@ -29,7 +29,7 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 walkdir = "2"
 ignore = "0.4"
 rayon = "1"
-sha2 = "0.10"
+blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 ureq = { version = "2", features = ["json"] }
 

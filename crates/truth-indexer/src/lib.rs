@@ -6,7 +6,6 @@ pub mod walker;
 use anyhow::Result;
 use rayon::prelude::*;
 use rusqlite::Connection;
-use sha2::{Digest, Sha256};
 use std::path::Path;
 use truth_core::config::RepoConfig;
 use truth_core::enums::*;
@@ -70,7 +69,7 @@ pub fn index_repo_opts(
 
     // Prior state for incremental diffing (empty for a full rebuild).
     let prior = if incremental {
-        truth_db::repo::repo_file_hashes(conn)?
+        truth_db::repo::repo_prior_files(conn)?
     } else {
         truth_db::repo::clear_repo_evidence(conn)?;
         std::collections::HashMap::new()
@@ -81,12 +80,12 @@ pub fn index_repo_opts(
     let t_walk = start.elapsed();
     let t0 = std::time::Instant::now();
 
-    // Phase 1 (parallel): read + hash each file; extract only changed/new files.
-    // Returns Unchanged (hash matched) or Built(FileBuild). rusqlite is not Sync,
-    // so no DB work happens here.
+    // Phase 1 (parallel): for each file, first try the mtime+size fast path
+    // (no read at all); only read + hash + extract changed/new files. rusqlite is
+    // not Sync, so no DB work happens here.
     let outcomes: Vec<BuildOutcome> = files
         .par_iter()
-        .filter_map(|path| build_outcome(path, &prior))
+        .filter_map(|wf| build_outcome(wf, &prior))
         .collect();
     let t_build = t0.elapsed();
     let t1 = std::time::Instant::now();
@@ -116,7 +115,7 @@ pub fn index_repo_opts(
     let deleted_ids: Vec<String> = prior
         .iter()
         .filter(|(uri, _)| !seen_uris.contains(*uri))
-        .map(|(_, (id, _))| id.clone())
+        .map(|(_, pf)| pf.artifact_id.clone())
         .collect();
 
     let mut stats = IndexStats {
@@ -184,23 +183,36 @@ enum BuildOutcome {
     Built { build: Box<FileBuild>, replaced: Option<String> },
 }
 
-/// Read + hash a file; extract only if new or changed vs `prior`.
+/// Decide what to do with one walked file. Fast path: if the file's mtime+size
+/// match the prior index, return `Unchanged` WITHOUT reading the file at all.
+/// Otherwise read + hash (blake3) + extract.
 fn build_outcome(
-    path: &Path,
-    prior: &std::collections::HashMap<String, (String, String)>,
+    wf: &walker::WalkedFile,
+    prior: &std::collections::HashMap<String, truth_db::repo::PriorFile>,
 ) -> Option<BuildOutcome> {
-    let contents = std::fs::read_to_string(path).ok()?;
-    let hash = hex_sha256(&contents);
-    let uri = path.to_string_lossy().into_owned();
+    let uri = wf.path.to_string_lossy().into_owned();
+    let known = prior.get(&uri);
 
-    if let Some((old_id, old_hash)) = prior.get(&uri) {
-        if *old_hash == hash {
+    // Fast path: unchanged mtime AND size → skip read/hash/extract entirely.
+    if let Some(pf) = known {
+        if pf.mtime != 0 && pf.mtime == wf.mtime && pf.size == wf.size {
             return Some(BuildOutcome::Unchanged { uri });
         }
-        let build = Box::new(build_from(path, &uri, contents, hash));
-        return Some(BuildOutcome::Built { build, replaced: Some(old_id.clone()) });
     }
-    let build = Box::new(build_from(path, &uri, contents, hash));
+
+    // Slow path: read + content hash. Confirms a real change (mtime can change
+    // without content changing, e.g. `touch`).
+    let contents = std::fs::read_to_string(&wf.path).ok()?;
+    let hash = content_hash(&contents);
+
+    if let Some(pf) = known {
+        if pf.hash == hash {
+            return Some(BuildOutcome::Unchanged { uri });
+        }
+        let build = Box::new(build_from(&wf.path, &uri, contents, hash, wf));
+        return Some(BuildOutcome::Built { build, replaced: Some(pf.artifact_id.clone()) });
+    }
+    let build = Box::new(build_from(&wf.path, &uri, contents, hash, wf));
     Some(BuildOutcome::Built { build, replaced: None })
 }
 
@@ -211,8 +223,15 @@ struct FileBuild {
 }
 
 /// Build an artifact + evidence from already-read file contents. Pure: no DB
-/// access, safe to call in parallel.
-fn build_from(path: &Path, uri: &str, contents: String, hash: String) -> FileBuild {
+/// access, safe to call in parallel. mtime+size are stored in metadata so the
+/// next incremental index can skip this file without reading it.
+fn build_from(
+    path: &Path,
+    uri: &str,
+    contents: String,
+    hash: String,
+    wf: &walker::WalkedFile,
+) -> FileBuild {
     let artifact = Artifact {
         id: new_id(),
         source: SourceKind::GitRepo,
@@ -223,7 +242,7 @@ fn build_from(path: &Path, uri: &str, contents: String, hash: String) -> FileBui
         authored_at: None,
         observed_at: now_secs(),
         author: None,
-        metadata_json: serde_json::json!({}),
+        metadata_json: serde_json::json!({ "mtime": wf.mtime, "size": wf.size }),
     };
 
     let facts = extract::extract_file(path, &contents);
@@ -269,11 +288,10 @@ fn empty_json() -> serde_json::Value {
     serde_json::Value::Object(serde_json::Map::new())
 }
 
-fn hex_sha256(s: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(s.as_bytes());
-    let digest = h.finalize();
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+/// Content hash for change detection. blake3 is ~5-10x faster than sha256 and we
+/// do not need cryptographic strength here — only "did the bytes change?".
+fn content_hash(s: &str) -> String {
+    blake3::hash(s.as_bytes()).to_hex().to_string()
 }
 
 fn artifact_kind_for(path: &Path) -> ArtifactKind {

@@ -431,19 +431,40 @@ pub fn clear_repo_evidence(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Map of indexed repo-file `uri -> (artifact_id, hash)`, used by incremental
-/// indexing to detect unchanged / changed / deleted files.
-pub fn repo_file_hashes(conn: &Connection) -> Result<std::collections::HashMap<String, (String, String)>> {
+/// A previously-indexed repo file's change-detection state.
+#[derive(Debug, Clone)]
+pub struct PriorFile {
+    pub artifact_id: String,
+    pub hash: String,
+    /// mtime (unix secs) and size (bytes) from the artifact metadata; either may
+    /// be 0 for artifacts written before this was tracked.
+    pub mtime: i64,
+    pub size: u64,
+}
+
+/// Map of indexed repo-file `uri -> PriorFile`, used by incremental indexing to
+/// detect unchanged / changed / deleted files via mtime+size, falling back to
+/// the content hash.
+pub fn repo_prior_files(conn: &Connection) -> Result<std::collections::HashMap<String, PriorFile>> {
     let mut stmt = conn.prepare(
-        "SELECT uri, id, hash FROM artifacts WHERE source = 'git_repo' AND hash IS NOT NULL",
+        "SELECT uri, id, hash, metadata_json FROM artifacts
+         WHERE source = 'git_repo' AND hash IS NOT NULL",
     )?;
     let mut map = std::collections::HashMap::new();
     let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
     })?;
     for row in rows {
-        let (uri, id, hash) = row?;
-        map.insert(uri, (id, hash));
+        let (uri, id, hash, meta) = row?;
+        let v: serde_json::Value = serde_json::from_str(&meta).unwrap_or_default();
+        let mtime = v.get("mtime").and_then(|x| x.as_i64()).unwrap_or(0);
+        let size = v.get("size").and_then(|x| x.as_u64()).unwrap_or(0);
+        map.insert(uri, PriorFile { artifact_id: id, hash, mtime, size });
     }
     Ok(map)
 }

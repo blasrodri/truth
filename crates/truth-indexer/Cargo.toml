@@ -13,5 +13,5 @@ regex.workspace = true
 walkdir.workspace = true
 ignore.workspace = true
 rayon.workspace = true
-sha2.workspace = true
+blake3.workspace = true
 rusqlite.workspace = true

@@ -67,8 +67,18 @@ fn is_default_include(include: &[String]) -> bool {
     include == default.as_slice()
 }
 
+/// A file selected for indexing, with cheap change-detection metadata captured
+/// during the walk (no extra syscall — `ignore` already stat'd the entry).
+pub struct WalkedFile {
+    pub path: PathBuf,
+    /// Modified time as unix epoch seconds (0 if unavailable).
+    pub mtime: i64,
+    /// File size in bytes.
+    pub size: u64,
+}
+
 /// Resolve the set of files to index under `root`.
-pub fn walk(root: &Path, cfg: &RepoConfig) -> Vec<PathBuf> {
+pub fn walk(root: &Path, cfg: &RepoConfig) -> Vec<WalkedFile> {
     // Custom, non-default include list → use it as path scopes (legacy behavior,
     // but still extension-filtered and binary-skipped).
     let scopes: Vec<PathBuf> = if cfg.include.is_empty() || is_default_include(&cfg.include) {
@@ -124,9 +134,26 @@ pub fn walk(root: &Path, cfg: &RepoConfig) -> Vec<PathBuf> {
                 if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
                     && !is_excluded_with(p, &root, &cfg_exclude)
                     && is_indexable_file(p)
-                    && !is_too_large(p)
                 {
-                    out.lock().unwrap().push(p.to_path_buf());
+                    // `ignore` already stat'd the entry during the walk, so
+                    // reading metadata here is effectively free.
+                    let md = entry.metadata().ok();
+                    let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
+                    if size > MAX_FILE_BYTES {
+                        return ignore::WalkState::Continue;
+                    }
+                    // Nanosecond-precision mtime: same-second edits must still be
+                    // detected, so we cannot truncate to whole seconds.
+                    let mtime = md
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos() as i64)
+                        .unwrap_or(0);
+                    out.lock().unwrap().push(WalkedFile {
+                        path: p.to_path_buf(),
+                        mtime,
+                        size,
+                    });
                 }
             }
             ignore::WalkState::Continue
@@ -134,8 +161,8 @@ pub fn walk(root: &Path, cfg: &RepoConfig) -> Vec<PathBuf> {
     });
 
     let mut out = out.into_inner().unwrap();
-    out.sort();
-    out.dedup();
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out.dedup_by(|a, b| a.path == b.path);
     out
 }
 
@@ -164,10 +191,6 @@ fn is_indexable_file(path: &Path) -> bool {
         }
     }
     false
-}
-
-fn is_too_large(path: &Path) -> bool {
-    std::fs::metadata(path).map(|m| m.len() > MAX_FILE_BYTES).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -201,7 +224,7 @@ mod tests {
         touch(&dir.join("logo.png"));
 
         let files = walk(&dir, &default_cfg());
-        let names: Vec<String> = files.iter().map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned()).collect();
+        let names: Vec<String> = files.iter().map(|p| p.path.strip_prefix(&dir).unwrap().to_string_lossy().into_owned()).collect();
 
         assert!(names.iter().any(|n| n.ends_with("crates/foo/src/lib.rs")));
         assert!(names.iter().any(|n| n.ends_with("cmd/server/main.go")));
@@ -226,7 +249,7 @@ mod tests {
         cfg.include = vec!["backend".into()]; // non-default → scope
 
         let files = walk(&dir, &cfg);
-        let names: Vec<String> = files.iter().map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned()).collect();
+        let names: Vec<String> = files.iter().map(|p| p.path.strip_prefix(&dir).unwrap().to_string_lossy().into_owned()).collect();
         assert!(names.iter().any(|n| n.ends_with("backend/app.py")));
         assert!(!names.iter().any(|n| n.ends_with("frontend/app.ts")));
 
