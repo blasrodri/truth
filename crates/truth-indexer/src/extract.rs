@@ -149,9 +149,16 @@ pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
         }
 
         if p.route.is_match(line) {
+            let has_signal = line_has_route_signal(line);
             for c in p.route.captures_iter(line) {
                 let route = group(line, &c, 1);
-                out.push(fact(route, "route_exists", serde_json::Value::Bool(true), line_no, line));
+                // Precision gate: a quoted `/x` is only a route if the line
+                // registers one (framework verb) or the path is clearly
+                // route-shaped. Rejects file paths, derivation paths (`/0`,
+                // `/637`), and format strings that dominated false positives.
+                if has_signal || route_shaped(route) {
+                    out.push(fact(route, "route_exists", serde_json::Value::Bool(true), line_no, line));
+                }
             }
         }
         let mut specific = false;
@@ -251,6 +258,70 @@ fn fact<'a>(
     }
 }
 
+/// Framework HTTP route-registration signals. If a line contains one of these,
+/// a quoted `/x` on it is very likely a real route.
+const ROUTE_SIGNALS: &[&str] = &[
+    ".get(", ".post(", ".put(", ".patch(", ".delete(", ".head(", ".options(",
+    ".route(", ".routes(", ".handle(", ".at(", ".mount(", ".nest(", ".service(",
+    "handlefunc(", "handle(", "@get", "@post", "@put", "@patch", "@delete",
+    "@app.", "@router.", "@route", "@requestmapping", "@getmapping", "@postmapping",
+    "router.", "route!", "web::resource", "addroute", "register", "endpoint",
+    "path(", "url(", "uri(", "r.get", "r.post", "app.get", "app.post",
+];
+
+/// Whether a line contains a framework route-registration signal (ASCII-ci).
+fn line_has_route_signal(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    ROUTE_SIGNALS.iter().any(|s| lower.contains(s))
+}
+
+/// Common filesystem-path roots that are never HTTP routes.
+const FS_ROOTS: &[&str] = &[
+    "usr", "etc", "var", "tmp", "bin", "lib", "opt", "home", "dev", "proc",
+    "sys", "mnt", "users", "applications", "library", "private", "volumes",
+];
+
+/// File extensions that mark a path literal as a filename, not a route.
+const FILE_EXTS: &[&str] = &[
+    "rs", "go", "py", "ts", "js", "c", "h", "cpp", "java", "rb", "txt", "md",
+    "json", "yaml", "yml", "toml", "lock", "dll", "so", "dylib", "exe", "sh",
+    "cfg", "ini", "xml", "html", "css", "png", "jpg", "svg", "csv", "sql",
+    "proto", "pdf", "log", "tmp", "bak", "pem", "key", "crt",
+];
+
+/// Whether a path *looks* like an HTTP route on its own (used only when there's
+/// NO framework signal on the line, where we must be conservative). It must
+/// have a real "word" segment (≥2 chars with a letter, rejecting `/0` / `/637`),
+/// not be an absolute filesystem path (`/Users/...`, `/etc/...`), and not end in
+/// a known file extension (`/spec.yaml`, `/Restler.dll`). Path params (`:id`,
+/// `{id}`) are allowed.
+fn route_shaped(path: &str) -> bool {
+    let segments: Vec<&str> = path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return false;
+    }
+    let has_word = segments.iter().any(|s| {
+        let s = s.trim_start_matches(':').trim_matches(|c| c == '{' || c == '}');
+        s.len() >= 2 && s.chars().any(|c| c.is_ascii_alphabetic())
+    });
+    if !has_word {
+        return false;
+    }
+    // Absolute filesystem path?
+    if FS_ROOTS.contains(&segments[0].to_ascii_lowercase().as_str()) {
+        return false;
+    }
+    // Filename (last segment has a known file extension)?
+    if let Some(last) = segments.last() {
+        if let Some((_, ext)) = last.rsplit_once('.') {
+            if FILE_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Parse a C integer literal: decimal or `0x`-hex.
 fn parse_int_lit(raw: &str) -> Option<i64> {
     if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
@@ -282,15 +353,32 @@ fn push_extracted<'a>(
     });
 }
 
-/// Treat names that look like constants (UPPER_SNAKE, or Go-style PascalCase
-/// with a digit/word boundary) as config-ish, to avoid capturing `let x = 5`.
+/// Treat names that look like *meaningful* constants (UPPER_SNAKE, or Go-style
+/// PascalCase) as config-ish, to avoid capturing `let x = 5` or enum spam.
+///
+/// Precision filters: reject names shorter than 3 chars (`A`, `N`, `OK`) and
+/// single-token all-caps without an underscore (`ABORTED`, `TRUE`) which are
+/// almost always enum discriminants / flags, not config knobs. A real config
+/// constant reads like `MAX_RETRIES`, `DEFAULT_PORT`, `MaxConnections`.
 fn is_constish(name: &str) -> bool {
+    if name.len() < 3 {
+        return false;
+    }
     let upper_snake = name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
         && name.chars().any(|c| c.is_ascii_uppercase());
-    // Go style: starts uppercase, has a lowercase somewhere (PascalCase like MaxRetries).
-    let pascal = name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
-        && name.chars().any(|c| c.is_ascii_lowercase());
-    upper_snake || pascal
+    // PascalCase / camelCase compound (has a lowercase AND an uppercase).
+    let mixed = name.chars().any(|c| c.is_ascii_lowercase())
+        && name.chars().any(|c| c.is_ascii_uppercase());
+
+    if upper_snake {
+        // Require a multi-segment UPPER_SNAKE (`MAX_RETRIES`), which filters bare
+        // single-word enum tokens like `ABORTED`, `TRUE`, `OK`.
+        name.contains('_')
+    } else {
+        // PascalCase like `MaxRetries` is fine; require >1 capital so single-cap
+        // lowercase ids (`Foo`-ish) still count but `Bar` plain words are weak.
+        mixed
+    }
 }
 
 fn push_num<'a>(
@@ -482,6 +570,35 @@ secret := os.Getenv("STRIPE_SECRET")
         assert!(has_route(&f, "/v1/checkout"));
         assert!(f.iter().any(|e| e.subject == "STRIPE_SECRET" && e.predicate == "env_var_exists"));
         assert!(f.iter().any(|e| e.subject == "MaxRetries" && e.predicate == "retry_count" && e.value == serde_json::json!(5)));
+    }
+
+    #[test]
+    fn route_precision_keeps_real_drops_junk() {
+        // Framework-signal lines → routes kept.
+        let signaled = "app.get(\"/v1/checkout\", h); router.post(\"/webhooks/stripe\", h);";
+        let f = extract_file(&PathBuf::from("server.ts"), signaled);
+        assert!(has_route(&f, "/v1/checkout"));
+        assert!(has_route(&f, "/webhooks/stripe"));
+
+        // No signal: derivation paths, file paths, absolute paths → dropped.
+        let junk = "let p = \"/0\"; let q = \"/637\"; let f = \"/Users/x/main.py\"; let d = \"/spec.yaml\";";
+        let f = extract_file(&PathBuf::from("x.rs"), junk);
+        assert!(!f.iter().any(|e| e.predicate == "route_exists"), "junk routes: {:?}", f.iter().filter(|e| e.predicate=="route_exists").map(|e| e.subject.as_ref()).collect::<Vec<_>>());
+
+        // No signal but clearly route-shaped → kept.
+        let bare = "const path = \"/api/v1/users\";";
+        let f = extract_file(&PathBuf::from("x.rs"), bare);
+        assert!(has_route(&f, "/api/v1/users"));
+    }
+
+    #[test]
+    fn constant_precision_drops_single_letter_and_enum_tokens() {
+        let f = extract_file(&PathBuf::from("x.rs"), "let A = 1;\nconst ABORTED = 4016;\nconst MAX_RETRIES = 5;\n");
+        // Single-letter and bare-uppercase enum tokens are dropped...
+        assert!(!f.iter().any(|e| e.subject == "A"));
+        assert!(!f.iter().any(|e| e.subject == "ABORTED"));
+        // ...but a real UPPER_SNAKE config constant survives.
+        assert!(f.iter().any(|e| e.subject == "MAX_RETRIES" && e.value == serde_json::json!(5)));
     }
 
     #[test]
