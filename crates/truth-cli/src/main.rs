@@ -1,6 +1,6 @@
 //! `truth` CLI — deterministic engineering claim/evidence checker.
 
-use truth_cli::{baseline, ci, claims, commands, diff, doctor, eval, explain, inspect, owners, refs, report};
+use truth_cli::{baseline, ci, claims, commands, diff, docs, doctor, eval, explain, inspect, owners, refs, report};
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
@@ -125,6 +125,12 @@ enum Command {
     /// Find code references to a symbol/route/dependency (is it actually used?).
     Uses {
         symbol: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check if a subject is present in the docs (and consistent with code).
+    Docs {
+        subject: String,
         #[arg(long)]
         json: bool,
     },
@@ -278,6 +284,7 @@ fn run(command: Command) -> anyhow::Result<()> {
         Command::Config { key, json } => commands::config(&key, json),
         Command::Owners { subject, json } => owners::owners(&subject, json),
         Command::Uses { symbol, json } => refs::uses(&symbol, json),
+        Command::Docs { subject, json } => docs::docs(&subject, json),
         Command::Explain { check_id, json } => explain::explain(&check_id, json),
         Command::Eval { fixture, json, record, force } => {
             eval::eval(&fixture, json, record.as_deref(), force)

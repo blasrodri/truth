@@ -305,16 +305,13 @@ fn content_hash(s: &str) -> String {
 
 fn artifact_kind_for(path: &Path) -> ArtifactKind {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let fname = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
     match ext {
-        "md" | "markdown" => ArtifactKind::MarkdownDoc,
+        "md" | "markdown" | "rst" | "adoc" | "txt" => ArtifactKind::MarkdownDoc,
         "toml" | "yaml" | "yml" | "json" | "env" | "ini" | "conf" => ArtifactKind::ConfigFile,
-        _ => {
-            if path.file_name().and_then(|f| f.to_str()) == Some("docker-compose.yml") {
-                ArtifactKind::ConfigFile
-            } else {
-                ArtifactKind::SourceFile
-            }
-        }
+        _ if fname == "docker-compose.yml" => ArtifactKind::ConfigFile,
+        _ if fname == "README" => ArtifactKind::MarkdownDoc,
+        _ => ArtifactKind::SourceFile,
     }
 }
 

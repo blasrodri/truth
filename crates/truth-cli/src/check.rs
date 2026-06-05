@@ -119,6 +119,12 @@ pub fn run_check(
                 evidence_lines.push(line);
                 evidence_json.push(j);
             }
+            // Doc coverage / drift: flag when a subject is documented but absent
+            // from code (phantom feature), or present but undocumented.
+            if let Some((line, j)) = doc_evidence(conn, subject)? {
+                evidence_lines.push(line);
+                evidence_json.push(j);
+            }
         }
     }
 
@@ -413,6 +419,27 @@ fn code_reference_evidence(
         value: Some(report.count.into()),
         unit: Some("references".into()),
         citation: report.samples.first().map(|h| format!("{}:{}", h.file, h.line)),
+    };
+    Ok(Some((line, j)))
+}
+
+/// Documentation coverage / drift evidence for a subject. Only surfaced when
+/// informative (documented or drift); stays quiet for plain undocumented code to
+/// avoid noise on every check.
+fn doc_evidence(conn: &Connection, subject: &str) -> Result<Option<(String, EvidenceJson)>> {
+    let report = crate::docs::build_report(conn, subject)?;
+    let line = match report.status.as_str() {
+        "documented" => format!("docs: `{subject}` is documented ({} mention(s))", report.doc_count),
+        "drift" => format!("docs: `{subject}` appears in docs but not in code (possible drift)"),
+        _ => return Ok(None),
+    };
+    let j = EvidenceJson {
+        source: "docs".into(),
+        kind: report.status.clone(),
+        subject: Some(subject.to_string()),
+        value: Some(report.doc_count.into()),
+        unit: Some("mentions".into()),
+        citation: report.doc_samples.first().map(|h| format!("{}:{}", h.file, h.line)),
     };
     Ok(Some((line, j)))
 }

@@ -336,6 +336,32 @@ pub fn repo_file_uris(conn: &Connection) -> Result<Vec<String>> {
     Ok(rows)
 }
 
+/// Indexed code/config file URIs — everything that is NOT documentation. Used
+/// to test code-presence distinctly from doc-presence (drift detection).
+pub fn code_file_uris(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT uri FROM artifacts
+         WHERE source = 'git_repo' AND kind <> 'markdown_doc' ORDER BY uri",
+    )?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Indexed documentation file URIs (markdown / rst / plain text artifacts),
+/// used to answer "is X documented?".
+pub fn doc_file_uris(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT uri FROM artifacts
+         WHERE source = 'git_repo' AND kind = 'markdown_doc' ORDER BY uri",
+    )?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// Row counts for the three indexable tables (artifacts, spans, evidence).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IndexCounts {

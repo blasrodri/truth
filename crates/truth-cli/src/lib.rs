@@ -9,6 +9,7 @@ pub mod commands;
 pub mod config_util;
 pub mod diagnostics;
 pub mod diff;
+pub mod docs;
 pub mod doctor;
 pub mod eval;
 pub mod explain;
