@@ -1,6 +1,7 @@
 //! Library surface for the `truth` CLI, so commands are unit/integration
 //! testable without spawning the binary.
 
+pub mod ask;
 pub mod baseline;
 pub mod check;
 pub mod ci;

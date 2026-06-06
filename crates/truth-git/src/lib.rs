@@ -28,6 +28,16 @@ pub struct CommitInfo {
     pub subject: String,
 }
 
+/// How much history a file has and how recently it changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileActivity {
+    pub commits: usize,
+    /// Most recent commit (unix seconds).
+    pub last_ts: i64,
+    /// First commit (unix seconds).
+    pub first_ts: i64,
+}
+
 /// A ranked committer for a file: how recently + how much they worked on it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Committer {
@@ -84,6 +94,26 @@ impl GitHistory {
             return None; // untracked file
         }
         out.parse::<i64>().ok()
+    }
+
+    /// Activity summary for a file: total commits and first/last commit times.
+    /// `None` if the file is untracked or git is unavailable.
+    pub fn file_activity(&self, path: &Path) -> Option<FileActivity> {
+        if !self.available {
+            return None;
+        }
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        let out = self.git(&["log", "--format=%ct", "--", &name])?;
+        let times: Vec<i64> = out.lines().filter_map(|l| l.trim().parse::<i64>().ok()).collect();
+        if times.is_empty() {
+            return None;
+        }
+        // git log is newest-first.
+        Some(FileActivity {
+            commits: times.len(),
+            last_ts: *times.first().unwrap(),
+            first_ts: *times.last().unwrap(),
+        })
     }
 
     /// Most recent commits whose message matches any of `patterns` (OR), newest
