@@ -1,0 +1,10 @@
+[package]
+name = "truth-ast"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tree-sitter = "0.22"
+tree-sitter-rust = "0.21"

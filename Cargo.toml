@@ -7,6 +7,7 @@ members = [
     "crates/truth-logs",
     "crates/truth-llm",
     "crates/truth-git",
+    "crates/truth-ast",
     "crates/truth-cli",
 ]
 
