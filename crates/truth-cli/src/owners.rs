@@ -26,6 +26,12 @@ pub struct OwnerEntry {
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_active: Option<String>,
+    /// For git committers: number of recent commits to the file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commits: Option<usize>,
+    /// For git committers: share of recent commits (0..1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,23 +116,53 @@ pub fn build_report(conn: &rusqlite::Connection, subject: &str) -> Result<Owners
                         kind: o.role,
                         source: o.source,
                         last_active: None,
+                        commits: None,
+                        share: None,
                     });
                 }
             }
         }
 
-        // Git committer signal (always shown as supporting evidence).
+        // Git committer signal (always shown as supporting evidence). Ranked by
+        // recency-weighted activity, with commit count + share so a clear owner
+        // stands out from drive-by contributors.
         let history = GitHistory::for_file(&path);
         if history.available() {
-            for (author, _score, ts) in history.recent_committers(&path, 30).into_iter().take(3) {
-                let key = (author.clone(), "recent_committer".to_string());
+            let stats = history.committer_stats(&path, 30);
+            // A "clear lead": the top committer is well ahead of the second
+            // (≥2× their commits) with a meaningful absolute count, OR is a strong
+            // plurality. Active files have many contributors, so dominance over
+            // #2 matters more than an absolute majority.
+            let lead = match stats.as_slice() {
+                [top, second, ..]
+                    if top.commits >= 3
+                        && top.commits >= 2 * second.commits.max(1)
+                        && top.share >= 0.2 =>
+                {
+                    Some((top.author.clone(), top.commits, top.share))
+                }
+                [top] if top.commits >= 3 => Some((top.author.clone(), top.commits, top.share)),
+                _ => None,
+            };
+            for c in stats.into_iter().take(3) {
+                let key = (c.author.clone(), "recent_committer".to_string());
                 if seen.insert(key) {
                     owners.push(OwnerEntry {
-                        who: author,
+                        who: c.author,
                         kind: "recent_committer".into(),
                         source: "git".into(),
-                        last_active: fmt_date(ts),
+                        last_active: fmt_date(c.last_ts),
+                        commits: Some(c.commits),
+                        share: Some(c.share),
                     });
+                }
+            }
+            if let Some((name, commits, share)) = lead {
+                if !any_explicit {
+                    caveats.push(format!(
+                        "{name} is the clearest recent owner ({commits} commits, {:.0}% of recent activity — well ahead of others).",
+                        share * 100.0
+                    ));
                 }
             }
         }
@@ -206,7 +242,12 @@ pub fn owners(subject: &str, json: bool) -> Result<()> {
         println!("\nRecently worked on this code (git):");
         for o in committers {
             let when = o.last_active.as_deref().map(|d| format!(", last {d}")).unwrap_or_default();
-            println!("  • {}{}", o.who, when);
+            // Show commit count + share so a clear owner is visible.
+            let activity = match (o.commits, o.share) {
+                (Some(n), Some(s)) => format!(" — {n} commit(s), {:.0}%", s * 100.0),
+                _ => String::new(),
+            };
+            println!("  • {}{}{}", o.who, activity, when);
         }
     }
     if !report.caveats.is_empty() {

@@ -28,6 +28,20 @@ pub struct CommitInfo {
     pub subject: String,
 }
 
+/// A ranked committer for a file: how recently + how much they worked on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Committer {
+    pub author: String,
+    /// Recency-weighted score (newest commits weigh most).
+    pub score: f32,
+    /// Most recent commit timestamp (unix seconds).
+    pub last_ts: i64,
+    /// Raw commit count to this file within the window.
+    pub commits: usize,
+    /// Fraction of the window's commits authored by this person (0..1).
+    pub share: f32,
+}
+
 impl GitHistory {
     /// Open a history handle rooted at `root`, detecting git availability once.
     pub fn open(root: impl Into<PathBuf>) -> Self {
@@ -116,6 +130,16 @@ impl GitHistory {
     /// the last `window` commits touching the file. A heuristic *signal* of who
     /// has worked on the code — not a claim of responsibility.
     pub fn recent_committers(&self, path: &Path, window: usize) -> Vec<(String, f32, i64)> {
+        self.committer_stats(path, window)
+            .into_iter()
+            .map(|c| (c.author, c.score, c.last_ts))
+            .collect()
+    }
+
+    /// Ranked committers with commit count + recency-weighted score + share of
+    /// the recent commits to this file. The `share` (0..1) is what tells a clear
+    /// owner from one of many drive-by contributors.
+    pub fn committer_stats(&self, path: &Path, window: usize) -> Vec<Committer> {
         if !self.available {
             return Vec::new();
         }
@@ -128,7 +152,6 @@ impl GitHistory {
             return Vec::new();
         };
 
-        // Weight each commit by recency rank: 1st (newest)=window, ...=1.
         let rows: Vec<(&str, i64)> = out
             .lines()
             .filter_map(|l| {
@@ -137,16 +160,31 @@ impl GitHistory {
             })
             .collect();
         let n = rows.len();
-        let mut by_author: std::collections::HashMap<String, (f32, i64)> = std::collections::HashMap::new();
+        if n == 0 {
+            return Vec::new();
+        }
+        // (recency-weighted score, last ts, commit count). Newest commit gets the
+        // highest weight; count is the raw tally.
+        let mut by_author: std::collections::HashMap<String, (f32, i64, usize)> =
+            std::collections::HashMap::new();
         for (i, (author, ts)) in rows.iter().enumerate() {
-            let weight = (n - i) as f32; // newest gets highest weight
-            let e = by_author.entry((*author).to_string()).or_insert((0.0, *ts));
+            let weight = (n - i) as f32;
+            let e = by_author.entry((*author).to_string()).or_insert((0.0, *ts, 0));
             e.0 += weight;
             e.1 = e.1.max(*ts);
+            e.2 += 1;
         }
-        let mut ranked: Vec<(String, f32, i64)> =
-            by_author.into_iter().map(|(a, (s, t))| (a, s, t)).collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut ranked: Vec<Committer> = by_author
+            .into_iter()
+            .map(|(author, (score, last_ts, commits))| Committer {
+                author,
+                score,
+                last_ts,
+                commits,
+                share: commits as f32 / n as f32,
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         ranked
     }
 
@@ -184,6 +222,27 @@ mod tests {
     /// The truth repo itself is a git work tree, so these run against real data.
     fn repo_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().to_path_buf()
+    }
+
+    #[test]
+    fn committer_stats_have_counts_and_shares() {
+        let root = repo_root();
+        let h = GitHistory::open(root.clone());
+        if !h.available() {
+            return; // graceful no-op off a git tree
+        }
+        let stats = h.committer_stats(&root.join("Cargo.toml"), 50);
+        if stats.is_empty() {
+            return;
+        }
+        // Sorted by recency-weighted score (descending).
+        for w in stats.windows(2) {
+            assert!(w[0].score >= w[1].score);
+        }
+        // Shares are a valid distribution: each in (0,1], and they sum to ~1.
+        let total: f32 = stats.iter().map(|c| c.share).sum();
+        assert!((total - 1.0).abs() < 0.01, "shares should sum to ~1, got {total}");
+        assert!(stats.iter().all(|c| c.commits >= 1 && c.share > 0.0));
     }
 
     #[test]
