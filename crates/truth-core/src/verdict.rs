@@ -153,18 +153,38 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
     let expects_zero = input.claim.expected_number().map(|v| v == 0.0).unwrap_or(true);
 
     // Code-reference signal: for libraries with no logs, "referenced N times in
-    // the code" directly answers "is X used?". A referenced symbol contradicts
-    // an "unused" claim even when there are no runtime logs.
-    if expects_zero && code_refs > input.usage_threshold as usize {
+    // the code" directly answers "is X used?".
+    let subject = input.claim.subject.as_deref().unwrap_or("the subject");
+    if code_refs > input.usage_threshold as usize {
+        // Referenced in code. Contradicts an "unused"/"nobody uses" claim, and
+        // *supports* a positive "X is (still) used" claim.
+        let referenced = format!("`{subject}` is referenced {code_refs} time(s) in the indexed code.");
+        if expects_zero {
+            return VerdictDecision {
+                status: VerdictStatus::Contradicted,
+                confidence: 0.9,
+                evidence_ids,
+                caveats: vec![referenced],
+                suggested_action: Some("It is used in code; treat it as in use.".to_string()),
+            };
+        }
         return VerdictDecision {
-            status: VerdictStatus::Contradicted,
+            status: VerdictStatus::Supported,
             confidence: 0.9,
             evidence_ids,
-            caveats: vec![format!(
-                "`{}` is referenced {code_refs} time(s) in the indexed code.",
-                input.claim.subject.as_deref().unwrap_or("the subject")
-            )],
-            suggested_action: Some("It is used in code; treat it as in use.".to_string()),
+            caveats: vec![referenced],
+            suggested_action: None,
+        };
+    }
+    // Positive "X is used" claim with a definitive zero-reference code signal:
+    // contradicted (it is not used in code).
+    if !expects_zero && has_code_refs && code_refs == 0 && !has_logs {
+        return VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.75,
+            evidence_ids,
+            caveats: vec![format!("`{subject}` is not referenced in the indexed code.")],
+            suggested_action: None,
         };
     }
 
@@ -477,6 +497,35 @@ mod tests {
             query_results: &results,
             usage_threshold: 0,
             code_references: None,
+        });
+        assert_eq!(d.status, VerdictStatus::Contradicted);
+    }
+
+    #[test]
+    fn positive_usage_claim_supported_by_code_refs() {
+        // "X is still used" (expects nonzero) + the symbol is referenced in code
+        // -> Supported, even with no logs.
+        let claim = usage_claim(1);
+        let d = decide(&VerdictInput {
+            claim: &claim,
+            items: &[],
+            query_results: &[],
+            usage_threshold: 0,
+            code_references: Some(313),
+        });
+        assert_eq!(d.status, VerdictStatus::Supported);
+    }
+
+    #[test]
+    fn positive_usage_claim_contradicted_when_no_code_refs() {
+        // "X is still used" but it's defined and referenced nowhere -> Contradicted.
+        let claim = usage_claim(1);
+        let d = decide(&VerdictInput {
+            claim: &claim,
+            items: &[],
+            query_results: &[],
+            usage_threshold: 0,
+            code_references: Some(0),
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
