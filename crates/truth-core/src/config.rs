@@ -140,7 +140,9 @@ impl Default for LlmConfig {
             base_url: "http://localhost:11434/v1".into(),
             model: "qwen3:1.7b".into(),
             api_key_env: Some("LLM_API_KEY".into()),
-            timeout_ms: 1500,
+            // Generous by default: a cold local model's first token can take
+            // many seconds. The extractor falls back to regex on timeout.
+            timeout_ms: 30_000,
             enabled: false,
         }
     }
