@@ -27,6 +27,10 @@ pub struct VerdictInput<'a> {
     pub query_results: &'a [EvidenceQueryResult],
     /// Count above which a usage/error observation counts as "present".
     pub usage_threshold: i64,
+    /// References to the subject found in the indexed code (excluding its
+    /// definition). `None` if no code scan was run. This is the usage signal for
+    /// libraries / code that has no runtime logs.
+    pub code_references: Option<usize>,
 }
 
 /// Authority ordering by question type (spec §13.2). Higher = more authoritative.
@@ -139,15 +143,50 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
     if route_exists {
         evidence_ids.push("repo:route_exists".to_string());
     }
+    let code_refs = input.code_references.unwrap_or(0);
+    let has_code_refs = input.code_references.is_some();
+    if code_refs > 0 {
+        evidence_ids.push(format!("code:references={code_refs}"));
+    }
 
     // Claim asserts ~zero usage ("nobody uses ...").
     let expects_zero = input.claim.expected_number().map(|v| v == 0.0).unwrap_or(true);
 
-    if !has_logs && !route_exists {
+    // Code-reference signal: for libraries with no logs, "referenced N times in
+    // the code" directly answers "is X used?". A referenced symbol contradicts
+    // an "unused" claim even when there are no runtime logs.
+    if expects_zero && code_refs > input.usage_threshold as usize {
+        return VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.9,
+            evidence_ids,
+            caveats: vec![format!(
+                "`{}` is referenced {code_refs} time(s) in the indexed code.",
+                input.claim.subject.as_deref().unwrap_or("the subject")
+            )],
+            suggested_action: Some("It is used in code; treat it as in use.".to_string()),
+        };
+    }
+
+    if !has_logs && !route_exists && !has_code_refs {
         return inconclusive(
             "I found no usage logs and could not confirm the subject exists in the repo.",
             Some("Try naming the exact route or environment.".to_string()),
         );
+    }
+
+    // Expects-zero and we have a definitive code signal of zero references.
+    if expects_zero && has_code_refs && code_refs == 0 && !has_logs {
+        return VerdictDecision {
+            status: VerdictStatus::Supported,
+            confidence: 0.75,
+            evidence_ids,
+            caveats: vec![
+                "Not referenced in the indexed code (a strong but not absolute unused signal)."
+                    .to_string(),
+            ],
+            suggested_action: None,
+        };
     }
 
     if expects_zero {
@@ -437,6 +476,7 @@ mod tests {
             items: &[],
             query_results: &results,
             usage_threshold: 0,
+            code_references: None,
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
@@ -453,6 +493,7 @@ mod tests {
             items: &items,
             query_results: &results,
             usage_threshold: 0,
+            code_references: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }
@@ -466,6 +507,7 @@ mod tests {
             items: &[],
             query_results: &results,
             usage_threshold: 0,
+            code_references: None,
         });
         assert_eq!(d.status, VerdictStatus::Inconclusive);
     }
@@ -480,6 +522,7 @@ mod tests {
             items: &items,
             query_results: &[],
             usage_threshold: 0,
+            code_references: None,
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
@@ -494,6 +537,7 @@ mod tests {
             items: &items,
             query_results: &[],
             usage_threshold: 0,
+            code_references: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }
@@ -506,6 +550,7 @@ mod tests {
             items: &[],
             query_results: &[],
             usage_threshold: 0,
+            code_references: None,
         });
         assert_eq!(d.status, VerdictStatus::Inconclusive);
     }

@@ -54,13 +54,15 @@ impl OpenAiCompatibleExtractor {
     }
 
     /// Try the LLM; `None` on any failure (caller falls back to regex).
+    /// Set `TRUTH_LLM_DEBUG=1` to log the raw request/response to stderr.
     pub fn try_extract(&self, text: &str) -> Option<StructuredClaim> {
         // First attempt requests strict JSON mode (supported by OpenAI/llama.cpp);
         // if the server rejects that field (some don't), retry without it.
-        let content = self
-            .request(text, true)
-            .or_else(|| self.request(text, false))?;
-        parse_claim(&content)
+        let content = self.request(text, true).or_else(|| self.request(text, false));
+        if std::env::var("TRUTH_LLM_DEBUG").is_ok() {
+            eprintln!("[llm] {} {} -> {:?}", self.base_url, self.model, content);
+        }
+        parse_claim(&content?)
     }
 
     fn request(&self, text: &str, json_mode: bool) -> Option<String> {

@@ -110,11 +110,22 @@ pub fn run_check(
     // Code-reference evidence for usage claims: "nobody uses X" is far stronger
     // (or refuted) by whether X is referenced anywhere in the indexed code, not
     // just whether it shows up in logs. Lazy, check-time scan.
+    let mut code_references: Option<usize> = None;
     if matches!(
         claim.claim_type,
         truth_core::claim::ClaimType::UsageCount | truth_core::claim::ClaimType::DependencyUsed
     ) {
         if let Some(subject) = claim.subject.as_deref() {
+            // Reference count feeds the verdict (the usage signal for code with
+            // no logs); the evidence line is for display.
+            let report = crate::refs::build_report(conn, subject)?;
+            // Only feed a reference COUNT to the verdict when the subject is a
+            // real thing in the repo: referenced (count>0), or defined-but-unused
+            // (definition_only). A subject that's simply "not found" (likely a
+            // typo / nonexistent route) yields no code signal → stays inconclusive.
+            if report.files_scanned > 0 && report.status != "unreferenced" {
+                code_references = Some(report.count);
+            }
             if let Some((line, j)) = code_reference_evidence(conn, subject)? {
                 evidence_lines.push(line);
                 evidence_json.push(j);
@@ -133,6 +144,7 @@ pub fn run_check(
         items: &repo_items,
         query_results: &query_results,
         usage_threshold: 0,
+        code_references,
     });
     // Surface the concept interpretation so the user can confirm it (conservative
     // UX — we never silently substitute a different subject).

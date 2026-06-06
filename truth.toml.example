@@ -20,7 +20,7 @@ provider = "openai_compatible"
 base_url = "http://localhost:11434/v1"
 model = "qwen3:1.7b"
 api_key_env = "LLM_API_KEY"
-timeout_ms = 1500
+timeout_ms = 30000
 # Set to true once an OpenAI-compatible endpoint is reachable. When false,
 # claim extraction uses the deterministic offline extractor.
 enabled = false
