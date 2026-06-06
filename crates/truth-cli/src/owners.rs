@@ -39,10 +39,28 @@ pub struct OwnersReport {
 /// Resolve the files a subject maps to, using the index. A subject that is a
 /// path is used directly; otherwise we look up evidence and read its `uri`.
 fn files_for_subject(conn: &rusqlite::Connection, subject: &str) -> Result<Vec<String>> {
-    // Direct file path?
+    // Direct file path on disk (relative to CWD)?
     if Path::new(subject).exists() {
         return Ok(vec![subject.to_string()]);
     }
+
+    // A path that doesn't exist at this CWD but IS in the index, possibly stored
+    // with a `./` prefix or a different working directory. Match by URI suffix so
+    // `drivers/.../x.c` resolves to the stored `./drivers/.../x.c`.
+    let want = subject.trim_start_matches("./");
+    if want.contains('/') || want.contains('.') {
+        let uri_hits: Vec<String> = truth_db::repo::repo_file_uris(conn)?
+            .into_iter()
+            .filter(|uri| {
+                let u = uri.trim_start_matches("./");
+                u == want || u.ends_with(&format!("/{want}"))
+            })
+            .collect();
+        if !uri_hits.is_empty() {
+            return Ok(uri_hits);
+        }
+    }
+
     let mut files: Vec<String> = truth_db::repo::evidence_matching_key(conn, subject)?
         .into_iter()
         .filter_map(|i| {
