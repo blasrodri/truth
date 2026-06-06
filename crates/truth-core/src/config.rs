@@ -23,6 +23,52 @@ pub struct Config {
     pub security: SecurityConfig,
     #[serde(default)]
     pub verdict: VerdictConfig,
+    #[serde(default)]
+    pub indexer: IndexerConfig,
+}
+
+/// Which extraction backend the indexer uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtractorMode {
+    /// Regex-only (current behavior, the conservative default).
+    #[default]
+    Regex,
+    /// AST for supported languages (Rust routes); regex for everything else.
+    Ast,
+    /// AST where available, regex where not. AST routes win over regex routes.
+    Mixed,
+}
+
+impl ExtractorMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ExtractorMode::Regex => "regex",
+            ExtractorMode::Ast => "ast",
+            ExtractorMode::Mixed => "mixed",
+        }
+    }
+
+    /// Parse from a CLI flag / config string.
+    pub fn parse(s: &str) -> Option<ExtractorMode> {
+        match s.to_ascii_lowercase().as_str() {
+            "regex" => Some(ExtractorMode::Regex),
+            "ast" => Some(ExtractorMode::Ast),
+            "mixed" => Some(ExtractorMode::Mixed),
+            _ => None,
+        }
+    }
+
+    /// Whether AST extraction runs for supported languages under this mode.
+    pub fn uses_ast(&self) -> bool {
+        matches!(self, ExtractorMode::Ast | ExtractorMode::Mixed)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IndexerConfig {
+    #[serde(default)]
+    pub extractor: ExtractorMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

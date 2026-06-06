@@ -37,6 +37,9 @@ enum Command {
         /// Force a full re-index instead of the incremental (skip-unchanged) path.
         #[arg(long)]
         full: bool,
+        /// Extraction backend: regex (default) | ast | mixed. Overrides config.
+        #[arg(long)]
+        extractor: Option<String>,
     },
     /// Validate local setup and explain readiness.
     Doctor {
@@ -45,8 +48,11 @@ enum Command {
     },
     /// Show what was indexed (summary, or routes/constants/env/ports/deps/evidence).
     Inspect {
-        /// Optional category to list.
+        /// Optional category to list (routes/constants/env/ports/deps/evidence/extraction).
         category: Option<String>,
+        /// Filter by extraction method: ast | regex | all (default all).
+        #[arg(long)]
+        source: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -250,9 +256,13 @@ fn main() -> ExitCode {
 fn run(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Init => commands::init(),
-        Command::Index { path, stats, full } => commands::index(&path, stats, full),
+        Command::Index { path, stats, full, extractor } => {
+            commands::index(&path, stats, full, extractor.as_deref())
+        }
         Command::Doctor { json } => doctor::doctor(json),
-        Command::Inspect { category, json } => inspect::inspect(category.as_deref(), json),
+        Command::Inspect { category, source, json } => {
+            inspect::inspect(category.as_deref(), source.as_deref(), json)
+        }
         Command::Baseline { local_log, json } => baseline::baseline(local_log.as_deref(), json),
         Command::Check { claim, local_log, json } => {
             commands::check(&claim, local_log.as_deref(), json)

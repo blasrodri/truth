@@ -42,3 +42,4 @@ truth-indexer = { path = "crates/truth-indexer" }
 truth-logs = { path = "crates/truth-logs" }
 truth-llm = { path = "crates/truth-llm" }
 truth-git = { path = "crates/truth-git" }
+truth-ast = { path = "crates/truth-ast" }

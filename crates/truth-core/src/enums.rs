@@ -159,6 +159,7 @@ db_enum! {
     pub enum ExtractionMethod {
         Deterministic => "deterministic",
         Regex => "regex",
+        Ast => "ast",
         Llm => "llm",
         Manual => "manual",
     }

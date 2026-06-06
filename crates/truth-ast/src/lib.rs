@@ -23,6 +23,10 @@ pub struct AstFact {
     pub line: u32,
     /// The matched source text (trimmed).
     pub text: String,
+    /// For routes: the registration method (`route`, `post`, ...).
+    pub route_builder: Option<String>,
+    /// For routes: the handler identifier, if recoverable.
+    pub handler: Option<String>,
 }
 
 /// A minimal value type (avoids a serde_json dep in this crate).
@@ -62,46 +66,83 @@ fn node_text<'a>(node: tree_sitter::Node, bytes: &'a [u8]) -> &'a str {
     node.utf8_text(bytes).unwrap_or("")
 }
 
+/// Recover a handler name from a route's 2nd argument: an identifier directly
+/// (`handler`), or the inner identifier of a wrapper call like `get(checkout)`
+/// / `web::get().to(handler)` (best-effort: the first identifier-like token).
+fn handler_ident(node: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" | "scoped_identifier" => Some(node_text(node, bytes).to_string()),
+        "call_expression" => {
+            // get(checkout) -> the first identifier in the arguments.
+            let args = node.child_by_field_name("arguments")?;
+            named_children(args).into_iter().find_map(|c| handler_ident(c, bytes))
+        }
+        _ => named_children(node).into_iter().find_map(|c| handler_ident(c, bytes)),
+    }
+}
+
+/// Collect a node's named children into a Vec (avoids cursor-lifetime issues).
+fn named_children(node: tree_sitter::Node) -> Vec<tree_sitter::Node> {
+    let mut w = node.walk();
+    node.named_children(&mut w).collect()
+}
+
 /// Routes: a method call `recv.METHOD("…/path…", …)` where METHOD is a known
 /// route-registration name and the first argument is a string literal starting
 /// with `/`. Structurally precise — no file paths / derivation paths / format
 /// strings sneaking in.
 fn extract_routes(root: &tree_sitter::Node, bytes: &[u8], out: &mut Vec<AstFact>) -> Result<()> {
-    // (call_expression function:(field_expression field:(field_identifier)@m)
-    //   arguments:(arguments (string_literal)@s))
+    // Match the whole arguments node so we can read the route literal AND the
+    // handler argument (the 2nd arg).
     let q = Query::new(
         &tree_sitter_rust::language(),
         r#"
         (call_expression
           function: (field_expression field: (field_identifier) @method)
-          arguments: (arguments (string_literal) @arg))
+          arguments: (arguments) @args)
         "#,
     )
     .context("compiling route query")?;
     let mi = q.capture_index_for_name("method").unwrap();
-    let ai = q.capture_index_for_name("arg").unwrap();
+    let ai = q.capture_index_for_name("args").unwrap();
 
     let mut cursor = QueryCursor::new();
     for m in cursor.matches(&q, *root, bytes) {
         let method = m.captures.iter().find(|c| c.index == mi).map(|c| c.node);
-        let arg = m.captures.iter().find(|c| c.index == ai).map(|c| c.node);
-        let (Some(method), Some(arg)) = (method, arg) else { continue };
+        let args = m.captures.iter().find(|c| c.index == ai).map(|c| c.node);
+        let (Some(method), Some(args)) = (method, args) else { continue };
 
         let method_name = node_text(method, bytes);
         if !ROUTE_METHODS.contains(&method_name) {
             continue;
         }
-        let lit = node_text(arg, bytes);
-        let path = lit.trim_matches('"');
-        if path.starts_with('/') && path.len() > 1 {
-            out.push(AstFact {
-                subject: path.to_string(),
-                predicate: "route_exists".into(),
-                value: Value::Bool(true),
-                line: line_of(arg),
-                text: format!(".{method_name}({lit})"),
-            });
+
+        // First argument must be a string literal that is a route path.
+        let mut walker = args.walk();
+        let arg_nodes: Vec<_> = args.named_children(&mut walker).collect();
+        let Some(first) = arg_nodes.first() else { continue };
+        if first.kind() != "string_literal" {
+            continue;
         }
+        let lit = node_text(*first, bytes);
+        let path = lit.trim_matches('"');
+        if !(path.starts_with('/') && path.len() > 1) {
+            continue;
+        }
+
+        // Handler: the 2nd argument's leading identifier (e.g. `get(checkout)`
+        // -> "checkout"; bare `handler` -> "handler").
+        let handler = arg_nodes.get(1).and_then(|n| handler_ident(*n, bytes));
+
+        out.push(AstFact {
+            subject: path.to_string(),
+            predicate: "route_exists".into(),
+            value: Value::Bool(true),
+            line: line_of(*first),
+            text: format!(".{method_name}({lit})"),
+            route_builder: Some(method_name.to_string()),
+            handler,
+        });
     }
     Ok(())
 }
@@ -137,6 +178,8 @@ fn extract_consts(root: &tree_sitter::Node, bytes: &[u8], out: &mut Vec<AstFact>
             value: Value::Int(value),
             line: line_of(name_n),
             text: format!("const {name} = {value}"),
+            route_builder: None,
+            handler: None,
         });
     }
     Ok(())

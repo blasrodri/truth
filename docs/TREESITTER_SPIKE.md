@@ -104,3 +104,23 @@ Tree-sitter delivers precision regex structurally cannot, at acceptable cost,
 emitting the same fact shape. **Recommend** adopting it as an opt-in extraction
 source for `.rs` (feature/config gated), then extending to TS/Python/Go. The
 regex extractor stays the default until AST covers all indexed languages.
+
+## Adopted (Phase 7A)
+
+The spike's recommendation is now implemented: AST route extraction is wired into
+`truth-indexer` behind an `ExtractorMode { Regex | Ast | Mixed }` (CLI
+`--extractor`, config `[indexer] extractor`; default `regex` for
+backwards-compatibility).
+
+- `.rs` files in `ast`/`mixed` mode get routes from `truth-ast` (tagged
+  `extraction_method = ast`, with handler + route_builder metadata); the regex
+  route facts for those files are dropped to avoid duplicates (AST wins).
+- Constants/env/ports/deps and all non-Rust languages still use regex.
+- `truth inspect routes --source ast|regex|all`, `truth inspect extraction`, and
+  `truth doctor` expose which extractor produced what.
+
+Verified end-to-end: on a file with a real route + an `assert_eq!("/x", …)`
+string, regex returns 2 routes, ast returns 1 (the real one), mixed returns 1
+(AST, no duplicate). Existing eval fixtures still pass; 122 tests, clippy clean.
+
+Next: extend AST to TS/Python/Go routes, then call-site usage.

@@ -96,6 +96,11 @@ pub fn run(config: &Config, config_exists: bool) -> DoctorReport {
         checks.push(chk("repo_root", CheckStatus::Warn, format!("repo root `{}` not found", config.repo.root)));
     }
 
+    // Indexer extractor mode.
+    let mode = config.indexer.extractor;
+    let ast_note = if mode.uses_ast() { "AST Rust routes: enabled" } else { "AST Rust routes: disabled" };
+    checks.push(chk("extractor", CheckStatus::Info, format!("{} ({ast_note})", mode.as_str())));
+
     // Loki.
     checks.push(loki_check(config));
 

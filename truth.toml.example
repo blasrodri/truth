@@ -44,3 +44,11 @@ allowed_environments = ["prod", "staging"]
 
 [verdict]
 default_confidence_threshold = 0.75
+
+[indexer]
+# Extraction backend: "regex" (default) | "ast" | "mixed".
+# - regex: regex-only (fast, backwards-compatible).
+# - ast:   tree-sitter for Rust routes; regex for everything else.
+# - mixed: AST routes win over regex routes; regex fills the rest.
+# The `truth index --extractor` flag overrides this.
+extractor = "regex"

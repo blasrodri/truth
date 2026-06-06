@@ -72,6 +72,43 @@ is purely observational — it never fails because errors were observed.
 `explain`, `doctor`, `inspect`, and `baseline`, and emits stable machine-readable
 JSON with no extra prose.
 
+## AST extraction (Rust routes)
+
+Rust **route** extraction can use tree-sitter instead of regex:
+
+```bash
+truth index . --extractor regex   # default — current behavior
+truth index . --extractor ast     # AST routes for .rs (regex for everything else)
+truth index . --extractor mixed   # AST routes win; regex fills the rest
+```
+
+Or set it in `truth.toml` (the CLI flag overrides it):
+
+```toml
+[indexer]
+extractor = "mixed"
+```
+
+AST improves precision for Rust routes by understanding **call structure**: a
+string literal is only a route when it is the argument of a route-builder call
+(`.route(...)`, `.get(...)`, ...), so file paths, derivation paths, and test
+strings inside `assert_eq!` are rejected structurally — no precision heuristics.
+AST route evidence is tagged `extraction_method = ast` and carries the handler
+name when recoverable.
+
+**Scope:** AST currently covers **Rust routes only**. Regex still handles
+constants, env vars, ports, dependencies, and all other languages. Regex remains
+the default for speed and backwards compatibility.
+
+Inspect what came from where:
+
+```bash
+truth inspect routes --source ast      # only AST-extracted routes
+truth inspect routes --source regex    # only regex-extracted
+truth inspect routes --source all      # everything (default)
+truth inspect extraction               # counts by extraction method
+```
+
 `--local-log <path>` forces the offline local-file log adapter and always takes
 precedence over Loki, so the demo works regardless of `[loki] enabled`.
 

@@ -7,7 +7,7 @@ use anyhow::Result;
 use rayon::prelude::*;
 use rusqlite::Connection;
 use std::path::Path;
-use truth_core::config::RepoConfig;
+use truth_core::config::{ExtractorMode, RepoConfig};
 use truth_core::enums::*;
 use truth_core::models::*;
 use truth_core::{new_id, now_secs};
@@ -42,14 +42,14 @@ impl IndexStats {
     }
 }
 
-/// Full re-index: clear everything and rebuild. Used by eval/report (fresh
-/// in-memory DBs) and by `truth index --full`.
+/// Full re-index: clear everything and rebuild, regex extractor (the
+/// conservative default). Used by eval/report (fresh in-memory DBs).
 pub fn index_repo(
     conn: &Connection,
     cfg: &RepoConfig,
     root_override: Option<&Path>,
 ) -> Result<IndexStats> {
-    index_repo_opts(conn, cfg, root_override, false)
+    index_repo_opts(conn, cfg, root_override, false, ExtractorMode::Regex)
 }
 
 /// Index with an optional incremental fast-path.
@@ -63,6 +63,7 @@ pub fn index_repo_opts(
     cfg: &RepoConfig,
     root_override: Option<&Path>,
     incremental: bool,
+    mode: ExtractorMode,
 ) -> Result<IndexStats> {
     let start = std::time::Instant::now();
     let root = root_override.unwrap_or_else(|| Path::new(&cfg.root));
@@ -85,7 +86,7 @@ pub fn index_repo_opts(
     // not Sync, so no DB work happens here.
     let outcomes: Vec<BuildOutcome> = files
         .par_iter()
-        .filter_map(|wf| build_outcome(wf, &prior))
+        .filter_map(|wf| build_outcome(wf, &prior, mode))
         .collect();
     let t_build = t0.elapsed();
     let t1 = std::time::Instant::now();
@@ -190,6 +191,7 @@ enum BuildOutcome {
 fn build_outcome(
     wf: &walker::WalkedFile,
     prior: &std::collections::HashMap<String, truth_db::repo::PriorFile>,
+    mode: ExtractorMode,
 ) -> Option<BuildOutcome> {
     let uri = wf.path.to_string_lossy().into_owned();
     let known = prior.get(&uri);
@@ -210,10 +212,10 @@ fn build_outcome(
         if pf.hash == hash {
             return Some(BuildOutcome::Unchanged { uri });
         }
-        let build = Box::new(build_from(&wf.path, &uri, contents, hash, wf));
+        let build = Box::new(build_from(&wf.path, &uri, contents, hash, wf, mode));
         return Some(BuildOutcome::Built { build, replaced: Some(pf.artifact_id.clone()) });
     }
-    let build = Box::new(build_from(&wf.path, &uri, contents, hash, wf));
+    let build = Box::new(build_from(&wf.path, &uri, contents, hash, wf, mode));
     Some(BuildOutcome::Built { build, replaced: None })
 }
 
@@ -232,6 +234,7 @@ fn build_from(
     contents: String,
     hash: String,
     wf: &walker::WalkedFile,
+    mode: ExtractorMode,
 ) -> FileBuild {
     let artifact = Artifact {
         id: new_id(),
@@ -246,9 +249,29 @@ fn build_from(
         metadata_json: serde_json::json!({ "mtime": wf.mtime, "size": wf.size }),
     };
 
+    // AST route extraction for Rust files when the mode enables it. AST routes
+    // win over regex routes for `.rs`, so we drop regex `route_exists` facts for
+    // these files to avoid duplicate/noisy routes.
+    let is_rust = path.extension().and_then(|e| e.to_str()) == Some("rs");
+    let use_ast_routes = mode.uses_ast() && is_rust;
+
+    let mut evidence = Vec::new();
+
+    if use_ast_routes {
+        for af in truth_ast::extract_rust(&contents).unwrap_or_default() {
+            if af.predicate != "route_exists" {
+                continue; // only routes come from AST for now
+            }
+            evidence.push(ast_route_evidence(&artifact.id, uri, af));
+        }
+    }
+
     let facts = extract::extract_file(path, &contents);
-    let mut evidence = Vec::with_capacity(facts.len());
     for fact in facts {
+        // In ast/mixed mode, regex routes for Rust files are superseded by AST.
+        if use_ast_routes && fact.predicate == "route_exists" {
+            continue;
+        }
         let authority = authority_for(&fact.predicate, path);
         let span = Span {
             id: new_id(),
@@ -283,12 +306,93 @@ fn build_from(
             authority,
             valid_from: None,
             valid_to: None,
-            extraction_method: ExtractionMethod::Deterministic,
+            extraction_method: ExtractionMethod::Regex,
             metadata_json: metadata,
         };
         evidence.push((span, item));
     }
     FileBuild { artifact, evidence }
+}
+
+/// Convert an AST route fact into the existing evidence model, tagged
+/// `extraction_method=ast` and carrying handler/route_builder metadata. The
+/// human label (path words + handler) goes in `object_text` for concept
+/// resolution, matching the regex enrichment behavior.
+fn ast_route_evidence(artifact_id: &str, uri: &str, af: truth_ast::AstFact) -> (Span, EvidenceItem) {
+    let span = Span {
+        id: new_id(),
+        artifact_id: artifact_id.to_string(),
+        text: af.text.clone(),
+        start_line: Some(af.line),
+        end_line: Some(af.line),
+        start_byte: None,
+        end_byte: None,
+        metadata_json: empty_json(),
+    };
+    // Build a human label from the path words + handler (for concept resolution).
+    let label = ast_route_label(&af);
+    let mut metadata = serde_json::json!({
+        "uri": uri,
+        "line": af.line,
+        "extraction": "ast",
+    });
+    if let Some(b) = &af.route_builder {
+        metadata["route_builder"] = serde_json::Value::String(b.clone());
+    }
+    if let Some(h) = &af.handler {
+        metadata["handler"] = serde_json::Value::String(h.clone());
+    }
+    metadata["label"] = serde_json::Value::String(label.clone());
+
+    let item = EvidenceItem {
+        id: new_id(),
+        span_id: span.id.clone(),
+        evidence_type: EvidenceType::Definition,
+        subject_text: Some(af.subject),
+        subject_concept_id: None,
+        predicate: Some("route_exists".to_string()),
+        object_text: Some(label),
+        value_json: Some(serde_json::Value::Bool(true)),
+        unit: None,
+        // AST routes are structurally precise; rate confidence at least as high
+        // as regex (1.0 here).
+        confidence: 1.0,
+        authority: Authority::Code,
+        valid_from: None,
+        valid_to: None,
+        extraction_method: ExtractionMethod::Ast,
+        metadata_json: metadata,
+    };
+    (span, item)
+}
+
+/// Human label for an AST route: path segment words + the handler name.
+fn ast_route_label(af: &truth_ast::AstFact) -> String {
+    let mut words: Vec<String> = Vec::new();
+    for seg in af.subject.split('/').filter(|s| !s.is_empty()) {
+        let seg = seg.trim_matches(|c| c == ':' || c == '{' || c == '}');
+        if seg.is_empty() || seg.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if seg.len() == 2 && seg.starts_with('v') && seg[1..].chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        for w in seg.split(['_', '-']) {
+            if w.len() >= 2 {
+                words.push(w.to_lowercase());
+            }
+        }
+    }
+    if let Some(h) = &af.handler {
+        for w in h.split(['_', '-', ':']) {
+            if w.len() >= 2 {
+                words.push(w.to_lowercase());
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    words.retain(|w| seen.insert(w.clone()));
+    words.join(" ")
 }
 
 /// An empty JSON object that does not allocate (serde's `Map::new` is lazy).

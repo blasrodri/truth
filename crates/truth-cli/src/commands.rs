@@ -48,17 +48,30 @@ pub fn db_migrate() -> Result<()> {
     Ok(())
 }
 
-/// `truth index <path> [--stats] [--full]`
-pub fn index(path: &str, stats_flag: bool, full: bool) -> Result<()> {
+/// `truth index <path> [--stats] [--full] [--extractor regex|ast|mixed]`
+pub fn index(path: &str, stats_flag: bool, full: bool, extractor: Option<&str>) -> Result<()> {
     let config = load_config()?;
     let conn = truth_db::open(&config.database.path)?;
-    // Incremental by default: unchanged files are skipped. `--full` forces a
-    // clean rebuild.
-    let stats =
-        truth_indexer::index_repo_opts(&conn, &config.repo, Some(Path::new(path)), !full)?;
+    // CLI flag overrides the `[indexer] extractor` config; default is regex.
+    let mode = match extractor {
+        Some(s) => truth_core::config::ExtractorMode::parse(s)
+            .with_context(|| format!("unknown --extractor `{s}` (regex|ast|mixed)"))?,
+        None => config.indexer.extractor,
+    };
+    // Incremental by default. But an explicit `--extractor` changes extraction
+    // policy without changing file contents, so the incremental fast-path would
+    // skip everything and silently keep the old evidence — force a full rebuild.
+    let force_full = full || extractor.is_some();
+    let stats = truth_indexer::index_repo_opts(
+        &conn,
+        &config.repo,
+        Some(Path::new(path)),
+        !force_full,
+        mode,
+    )?;
     println!(
-        "Indexed {} files → {} artifacts, {} evidence items.",
-        stats.files, stats.artifacts, stats.evidence_items
+        "Indexed {} files → {} artifacts, {} evidence items (extractor: {}).",
+        stats.files, stats.artifacts, stats.evidence_items, mode.as_str()
     );
     if stats_flag {
         println!();
