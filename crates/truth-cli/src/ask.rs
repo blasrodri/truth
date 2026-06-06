@@ -23,6 +23,13 @@ pub struct AskReport {
     pub lead: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity: Option<ActivitySummary>,
+    /// How many other files reference this file's module (by stem). None if not
+    /// computable. 0 = likely an orphan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub referenced_by: Option<usize>,
+    /// Documentation mentions of this file's module name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_mentions: Option<usize>,
     pub notes: Vec<String>,
 }
 
@@ -93,11 +100,67 @@ pub fn build_report(conn: &rusqlite::Connection, file: &str, now: i64) -> Result
         }
     }
 
+    // Module-level usage: is this file referenced by OTHER files (by its module
+    // stem, e.g. `mutex` for `mutex.rs`)? 0 hints at an orphan/leaf. And doc
+    // coverage of that module name.
+    let mut referenced_by = None;
+    let mut doc_mentions = None;
+    if let Some(path) = owners_report.files.first() {
+        if let Some(stem) = module_stem(path) {
+            let code = truth_db::repo::code_file_uris(conn)?;
+            let others: Vec<String> = code.into_iter().filter(|u| !same_file(u, path)).collect();
+            let (count, _, scanned) = crate::refs::scan_references(&others, &stem, None, None, 0);
+            if scanned > 0 {
+                referenced_by = Some(count);
+            }
+            let docs = truth_db::repo::doc_file_uris(conn)?;
+            let (dcount, _, dscanned) = crate::refs::scan_references(&docs, &stem, None, None, 0);
+            if dscanned > 0 {
+                doc_mentions = Some(dcount);
+            }
+            if referenced_by == Some(0) {
+                notes.push(format!(
+                    "No other file references the `{stem}` module — it may be an entry point or unused."
+                ));
+            }
+        }
+    }
+
     if !resolved {
         notes.push(format!("Could not resolve `{file}` — pass a real path or run `truth index .`."));
     }
 
-    Ok(AskReport { file: file.to_string(), resolved, owners, lead, activity, notes })
+    Ok(AskReport {
+        file: file.to_string(),
+        resolved,
+        owners,
+        lead,
+        activity,
+        referenced_by,
+        doc_mentions,
+        notes,
+    })
+}
+
+/// The module stem of a file path (`.../sync/mutex.rs` -> "mutex"), for a
+/// module-level "is this referenced elsewhere?" scan. Skips index-style stems
+/// (`mod`, `lib`, `main`, `index`) that aren't meaningful module names.
+fn module_stem(path: &str) -> Option<String> {
+    let stem = Path::new(path).file_stem()?.to_str()?;
+    if stem.len() < 3 || matches!(stem, "mod" | "lib" | "main" | "index") {
+        return None;
+    }
+    Some(stem.to_string())
+}
+
+/// Whether two URIs point at the same file, tolerating a `./` prefix.
+fn same_file(a: &str, b: &str) -> bool {
+    a.trim_start_matches("./") == b.trim_start_matches("./")
+}
+
+/// The module stem of a path for display (best-effort).
+fn stem_of(path: &str) -> String {
+    module_stem(path).unwrap_or_else(|| path.to_string())
 }
 
 fn fmt_date(ts: i64) -> Option<String> {
@@ -142,6 +205,22 @@ pub fn ask(file: &str, json: bool) -> Result<()> {
             a.status, a.commits
         );
     }
+    if let Some(n) = report.referenced_by {
+        // The zero case is the reliable signal (likely orphan). A nonzero count
+        // is a coarse mention-count (a common stem like `worker` over-counts), so
+        // bucket it rather than imply precision.
+        let s = match n {
+            0 => "Referenced elsewhere: none found — likely an entry point or unused.".to_string(),
+            1..=5 => format!("Referenced elsewhere: a few files mention `{}` (~{n}).", stem_of(&report.file)),
+            _ => format!("Referenced elsewhere: widely mentioned (`{}` appears across the codebase).", stem_of(&report.file)),
+        };
+        println!("{s}");
+    }
+    if let Some(d) = report.doc_mentions {
+        if d > 0 {
+            println!("Docs: mentioned in {d} doc location(s).");
+        }
+    }
     for n in &report.notes {
         println!("\n• {n}");
     }
@@ -163,5 +242,15 @@ mod tests {
         // Future / equal timestamps don't go negative.
         assert_eq!(activity_status(now, now + DAY), "active");
         assert_eq!(days_since(now, now + DAY), 0);
+    }
+
+    #[test]
+    fn module_stem_skips_index_files() {
+        assert_eq!(module_stem("a/b/mutex.rs").as_deref(), Some("mutex"));
+        assert_eq!(module_stem("a/b/mod.rs"), None);
+        assert_eq!(module_stem("a/b/lib.rs"), None);
+        assert_eq!(module_stem("a/io.rs"), None); // too short (<3)
+        assert!(same_file("./src/x.rs", "src/x.rs"));
+        assert!(!same_file("src/x.rs", "src/y.rs"));
     }
 }
