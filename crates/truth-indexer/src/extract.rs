@@ -149,8 +149,27 @@ pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
                 let value = parse_int_lit(raw);
                 if let Some(n) = value {
                     let predicate = predicate_for_name(name);
-                    // Subject is the macro name (so `truth config NAME` finds it).
-                    push_extracted(&mut out, name, predicate, n, line_no, line);
+                    // Keep only claimable config: a specific predicate
+                    // (retry/timeout/port) is inherently relevant; a generic
+                    // #define must pass the config-relevance gate, else it's
+                    // hardware/register noise (dominant in C — the kernel has
+                    // millions of these).
+                    // A tunable SUFFIX (`..._TIMEOUT`, `..._RETRIES`, `..._PORT`)
+                    // is a strong config signal that overrides the hardware veto
+                    // (so `DMA_TIMEOUT` survives) — but a mere substring match
+                    // (`PORT_ENA_RX_SHIFT`) does not.
+                    let tunable_suffix = ends_with_tunable(name);
+                    let keep = if tunable_suffix {
+                        !looks_like_chip_macro(name)
+                    } else {
+                        !is_hardware_artifact(name)
+                            && !looks_like_chip_macro(name)
+                            && is_config_relevant(name)
+                    };
+                    if keep {
+                        // Subject is the macro name (so `truth config NAME` finds it).
+                        push_extracted(&mut out, name, predicate, n, line_no, line);
+                    }
                 }
                 continue;
             }
@@ -206,7 +225,9 @@ pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
         if !specific && p.named_const.is_match(line) {
             if let Some(c) = p.named_const.captures(line) {
                 let name = group(line, &c, 1);
-                if is_constish(name) {
+                // Must look like a constant AND be claimable config (not a
+                // hardware/register/enum/chip artifact).
+                if is_constish(name) && is_config_relevant(name) && !looks_like_chip_macro(name) {
                     let val = group(line, &c, 2);
                     push_num(&mut out, name, Cow::Owned(name.to_uppercase()), val, line_no, line);
                 }
@@ -460,6 +481,75 @@ fn push_extracted<'a>(
 /// single-token all-caps without an underscore (`ABORTED`, `TRUE`) which are
 /// almost always enum discriminants / flags, not config knobs. A real config
 /// constant reads like `MAX_RETRIES`, `DEFAULT_PORT`, `MaxConnections`.
+/// Keyword stems that mark a constant as *tunable/policy config* — the kind of
+/// thing a person makes a claim about ("the timeout is 30s", "max retries is 5").
+const CONFIG_KEYWORDS: &[&str] = &[
+    "retr", "timeout", "port", "max", "min", "limit", "size", "len", "count",
+    "interval", "threshold", "enable", "disable", "default", "capacity", "buffer",
+    "batch", "window", "ttl", "delay", "backoff", "concurren", "pool", "quota",
+    "rate", "deadline", "expire", "version", "level",
+];
+
+/// Substrings that mark a constant as a *hardware / register / wiring* artifact —
+/// never a claimable config value (these dominate C codebases like the kernel).
+const HARDWARE_MARKERS: &[&str] = &[
+    "offset", "_ofst", "_off", "addr", "_reg", "register", "irq", "_mask", "_bit",
+    "_shift", "_pin", "gpio", "dma", "_phys", "vaddr", "opcode", "_cmd", "_dev",
+    "vendor", "_id", "magic", "_hz", "mhz", "khz", "_clk", "clock", "voltage",
+    "_mv", "_uv", "_ohm", "errno", "ioctl", "_fd",
+];
+
+/// A strong, unambiguous config suffix: the name *ends* with a tunable word, so
+/// it's a real knob even if a hardware word appears earlier (`DMA_TIMEOUT`,
+/// `RX_BUFFER_SIZE`). Distinct from a substring match (`PORT_ENA_RX_SHIFT`).
+fn ends_with_tunable(name: &str) -> bool {
+    const TUNABLE_SUFFIXES: &[&str] = &[
+        "_timeout", "_retries", "_retry", "_port", "_max", "_min", "_limit",
+        "_size", "_count", "_interval", "_threshold", "_ttl", "_delay",
+        "_backoff", "_capacity", "_deadline",
+    ];
+    let lower = name.to_ascii_lowercase();
+    TUNABLE_SUFFIXES.iter().any(|s| lower.ends_with(s))
+}
+
+/// A hard veto: the name contains a hardware/register/wiring marker, so it is
+/// never claimable config even if it also contains a config-ish word (e.g.
+/// `A5PSW_PORT_ENA_RX_SHIFT` has "port" but is a register shift). Applied to ALL
+/// constants, including ones routed to specific predicates.
+fn is_hardware_artifact(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    HARDWARE_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Whether a numeric constant name looks like *config a person would claim about*
+/// rather than a hardware/register/enum artifact. Conservative: must hit a config
+/// keyword and miss all hardware markers. This is what turns the kernel's ~2.3M
+/// raw constants (register offsets, reset IDs) into the few hundred real ones.
+fn is_config_relevant(name: &str) -> bool {
+    if is_hardware_artifact(name) {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    CONFIG_KEYWORDS.iter().any(|k| lower.contains(k))
+}
+
+/// Heuristic: the name starts with a chip/part/vendor code, so it's
+/// device-specific register/wiring data, not general config. Matches a leading
+/// segment like `A2065_`, `A3D_`, `A3700_`, `MT7621_` — a short token that mixes
+/// letters and digits before the first `_`.
+fn looks_like_chip_macro(name: &str) -> bool {
+    let Some((head, _rest)) = name.split_once('_') else {
+        return false;
+    };
+    if head.len() < 2 || head.len() > 8 {
+        return false;
+    }
+    let has_digit = head.chars().any(|c| c.is_ascii_digit());
+    let has_alpha = head.chars().any(|c| c.is_ascii_alphabetic());
+    // A leading alnum code (letters+digits) is a part number / chip prefix.
+    has_digit && has_alpha
+}
+
 fn is_constish(name: &str) -> bool {
     if name.len() < 3 {
         return false;
@@ -733,8 +823,9 @@ char *e = getenv("KERNEL_DEBUG");
         assert!(f.iter().any(|e| e.subject == "DMA_TIMEOUT" && e.predicate == "timeout" && e.value == serde_json::json!(3000)));
         assert!(f.iter().any(|e| e.predicate == "port" && e.value == serde_json::json!(8080)));
         assert!(f.iter().any(|e| e.predicate == "port" && e.value == serde_json::json!(443)));
-        // ...and a generic macro keeps its name, hex parsed to decimal.
-        assert!(f.iter().any(|e| e.subject == "BUF_MASK" && e.value == serde_json::json!(255)));
+        // BUF_MASK is a register/hardware artifact (`_mask`) — filtered out, not
+        // a claimable config value. This is the relevance gate in action.
+        assert!(!f.iter().any(|e| e.subject == "BUF_MASK"));
         // getenv works in C too.
         assert!(f.iter().any(|e| e.subject == "KERNEL_DEBUG" && e.predicate == "env_var_exists"));
     }
@@ -744,8 +835,30 @@ char *e = getenv("KERNEL_DEBUG");
         // `# define` with extra spaces, and a parenthesized value.
         let src = "#  define   FOO_TIMEOUT  900\n# define BAR (12)\n";
         let f = extract_file(&PathBuf::from("x.h"), src);
+        // A timeout keyword routes + survives the relevance gate.
         assert!(f.iter().any(|e| e.subject == "FOO_TIMEOUT" && e.predicate == "timeout" && e.value == serde_json::json!(900)));
-        assert!(f.iter().any(|e| e.subject == "BAR" && e.value == serde_json::json!(12)));
+        // `BAR` is a generic name with no config signal — filtered (not claimable).
+        assert!(!f.iter().any(|e| e.subject == "BAR"));
+    }
+
+    #[test]
+    fn relevance_gate_keeps_config_drops_hardware() {
+        // The kernel-noise problem: register/offset macros must be dropped, real
+        // tunables kept.
+        let src = "\
+#define A10_DERRADDR_OFST 44
+#define A10SR_RESET_USB 4
+#define GPIO_IRQ_BASE 32
+#define MAX_BATCH_SIZE 16
+#define WORKER_POOL_LIMIT 8
+";
+        let f = extract_file(&PathBuf::from("drv.c"), src);
+        let kept: Vec<&str> = f.iter().map(|e| e.subject.as_ref()).collect();
+        assert!(!kept.contains(&"A10_DERRADDR_OFST"), "offset noise kept: {kept:?}");
+        assert!(!kept.contains(&"A10SR_RESET_USB"), "reset-id noise kept: {kept:?}");
+        assert!(!kept.contains(&"GPIO_IRQ_BASE"), "irq noise kept: {kept:?}");
+        assert!(kept.contains(&"MAX_BATCH_SIZE"), "real config dropped: {kept:?}");
+        assert!(kept.contains(&"WORKER_POOL_LIMIT"), "real config dropped: {kept:?}");
     }
 
     #[test]
