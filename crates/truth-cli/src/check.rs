@@ -139,6 +139,33 @@ pub fn run_check(
         }
     }
 
+    // Diff evidence: for existence claims, "did THIS working tree add/remove the
+    // subject?" is the freshest, most direct signal — it answers "I added /x" /
+    // "I removed /x" before any re-index. Ranked ABOVE the index by prepending,
+    // and it short-circuits to Untouched (no item) on a clean tree, so repos
+    // with no diff fall through to the index unchanged.
+    if matches!(claim.claim_type, truth_core::claim::ClaimType::RouteExists) {
+        if let Some(subject) = claim.subject.as_deref() {
+            let fact = crate::diff_facts::scan(&config.repo.root, subject)?;
+            if let Some(item) = fact.as_existence_item() {
+                evidence_lines.insert(0, fact.evidence_line());
+                evidence_json.insert(
+                    0,
+                    EvidenceJson {
+                        source: "diff".into(),
+                        kind: "route_exists".into(),
+                        subject: Some(subject.to_string()),
+                        value: fact.present_after().map(|b| b.into()),
+                        unit: None,
+                        citation: fact.file.clone(),
+                    },
+                );
+                // Prepend so diff outranks the index in `decide_existence`.
+                repo_items.insert(0, item);
+            }
+        }
+    }
+
     let mut decision = decide(&VerdictInput {
         claim: &claim,
         items: &repo_items,
@@ -263,9 +290,16 @@ fn run_repo_query(
         QueryType::RouteExists => {
             let mut subj = needle.unwrap_or_default();
             let mut items = truth_db::repo::evidence_by_subject(conn, &subj)?;
-            // Concept resolution: if the literal subject isn't an indexed route,
-            // try to resolve a fuzzy subject ("old checkout") to the nearest one.
-            if !items.iter().any(|i| i.predicate.as_deref() == Some("route_exists")) {
+            // Concept resolution: if the subject isn't an indexed route, try to
+            // resolve a fuzzy subject ("old checkout") to the nearest one. But a
+            // LITERAL path ("/v1/ghost") is a precise existence claim — fuzzy-
+            // matching it to a different real route ("/v1/checkout") would launder
+            // a fabricated route into a real one, so we only fuzzy-resolve
+            // natural-language subjects, never literal `/`-paths.
+            let is_literal_path = subj.trim_start().starts_with('/');
+            if !is_literal_path
+                && !items.iter().any(|i| i.predicate.as_deref() == Some("route_exists"))
+            {
                 if let Some(res) = resolve_route(conn, &subj)? {
                     lines.push(format!(
                         "resolved `{}` → `{}` (confidence {:.0}%)",

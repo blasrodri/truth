@@ -1,0 +1,79 @@
+# Agent-claim fact-checking fixture.
+#
+# Each case is a sentence phrased the way a CODING AGENT reports its work,
+# checked against the sample repo's ground truth:
+#   - PAYMENT_RETRY_COUNT / MAX_RETRIES = 5
+#   - REQUEST_TIMEOUT = 30
+#   - port = 8080
+#   - /v1/checkout exists (POST + GET) and is exercised in api.log
+#
+# Three bands:
+#   (A) TRUE state claims   -> should be `supported`
+#   (B) FALSE state claims  -> should be `contradicted`   (the lies we must catch)
+#   (C) action/judgment     -> should be `inconclusive`   (must REFUSE, not guess)
+cases:
+  # ---- (A) true state claims: agent told the truth ---------------------
+  - name: A1 agent set retries correctly
+    question: I set the payment retry count to 5
+    repo: examples/sample-repo
+    expected_status: supported
+
+  - name: A2 agent reports the port it bound
+    question: the service now runs on port 8080
+    repo: examples/sample-repo
+    expected_status: supported
+
+  - name: A3 agent reports the timeout it configured
+    question: I set the request timeout to 30 seconds
+    repo: examples/sample-repo
+    expected_status: supported
+
+  - name: A4 agent says the route is still wired up
+    question: the /v1/checkout endpoint is still registered
+    repo: examples/sample-repo
+    local_log: examples/sample-logs/api.log
+    expected_status: supported
+
+  # ---- (B) false state claims: the agent LIED, truth must catch it -----
+  - name: B1 agent lies about retry value
+    question: I changed the payment retry count to 3
+    repo: examples/sample-repo
+    expected_status: contradicted
+
+  - name: B2 agent lies about the port
+    question: the service listens on port 9090
+    repo: examples/sample-repo
+    expected_status: contradicted
+
+  - name: B3 agent claims it deleted a route that is still there
+    question: nobody uses /v1/checkout anymore, I removed it
+    repo: examples/sample-repo
+    local_log: examples/sample-logs/api.log
+    expected_status: contradicted
+
+  - name: B4 agent lies about the timeout
+    question: I lowered the request timeout to 10 seconds
+    repo: examples/sample-repo
+    expected_status: contradicted
+
+  # ---- (C) action / judgment claims: truth must REFUSE -----------------
+  - name: C1 agent claims tests pass (unverifiable action)
+    question: I ran the test suite and everything passes
+    repo: examples/sample-repo
+    expected_status: inconclusive
+
+  - name: C2 agent makes a subjective quality claim
+    question: I refactored the checkout handler to be much cleaner
+    repo: examples/sample-repo
+    expected_status: inconclusive
+
+  - name: C3 agent claims a perf win with no measurable subject
+    question: this change makes checkout significantly faster
+    repo: examples/sample-repo
+    expected_status: inconclusive
+
+  - name: C4 agent references a thing that does not exist
+    question: I wired up the /v9/foo endpoint
+    repo: examples/sample-repo
+    local_log: examples/sample-logs/api.log
+    expected_status: inconclusive

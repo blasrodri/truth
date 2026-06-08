@@ -121,6 +121,23 @@ fn total_observed_count(input: &VerdictInput) -> i64 {
 }
 
 fn route_exists_in_repo(input: &VerdictInput) -> bool {
+    // Diff evidence is authoritative when present: it reflects the post-change
+    // state of THIS working tree, which outranks a possibly-stale index. If the
+    // diff says the route was removed (value=false), that wins over a lingering
+    // index item that still says it exists.
+    if let Some(diff_item) = input.items.iter().find(|i| {
+        i.predicate.as_deref() == Some("route_exists")
+            && i.metadata_json
+                .get("from_diff")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+    }) {
+        return diff_item
+            .value_json
+            .as_ref()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+    }
     input.items.iter().any(|i| {
         i.predicate.as_deref() == Some("route_exists")
             && i.value_json
@@ -303,6 +320,7 @@ fn decide_latest(input: &VerdictInput) -> VerdictDecision {
 }
 
 fn decide_existence(input: &VerdictInput) -> VerdictDecision {
+    use crate::claim::ClaimOperator;
     let exists = route_exists_in_repo(input)
         || input.items.iter().any(|i| {
             matches!(i.predicate.as_deref(), Some("env_var_exists") | Some("exists"))
@@ -311,20 +329,77 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
         });
-    if exists {
-        VerdictDecision {
+
+    // The claim's polarity decides what "match" means. A positive existence
+    // claim ("/x is still registered") is Supported when present; a negative
+    // one ("I removed /x") is Contradicted when the thing is still present.
+    let claims_absence = input.claim.operator == ClaimOperator::NotExists;
+
+    match (exists, claims_absence) {
+        // "still registered" and it is there → Supported.
+        (true, false) => VerdictDecision {
             status: VerdictStatus::Supported,
             confidence: 0.85,
             evidence_ids: repo_evidence_labels(input),
             caveats: vec!["Based on static repo contents at index time.".to_string()],
             suggested_action: None,
+        },
+        // "I removed it" but it is still there → Contradicted (caught the lie).
+        (true, true) => VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.85,
+            evidence_ids: repo_evidence_labels(input),
+            caveats: vec!["The subject is still present in the indexed repo.".to_string()],
+            suggested_action: Some(
+                "Claimed removed/absent, but it is still defined. Re-check the change.".to_string(),
+            ),
+        },
+        // "I removed it" and it is gone → Supported.
+        (false, true) => VerdictDecision {
+            status: VerdictStatus::Supported,
+            confidence: 0.78,
+            evidence_ids: repo_evidence_labels(input),
+            caveats: vec!["Absent from the indexed repo at index time.".to_string()],
+            suggested_action: None,
+        },
+        // Claimed present but not found. If the DIFF positively shows it was
+        // removed this turn, that's a contradiction of "still registered" — we
+        // caught the lie. Otherwise it may just be unindexed → can't confirm.
+        (false, false) => {
+            if diff_says_removed(input) {
+                VerdictDecision {
+                    status: VerdictStatus::Contradicted,
+                    confidence: 0.85,
+                    evidence_ids: repo_evidence_labels(input),
+                    caveats: vec![
+                        "The working-tree diff shows this was removed this turn.".to_string()
+                    ],
+                    suggested_action: Some(
+                        "Claimed still present, but the diff removed it. Re-check the change."
+                            .to_string(),
+                    ),
+                }
+            } else {
+                inconclusive(
+                    "I could not find this in the indexed repo. It may exist elsewhere or be unindexed.",
+                    None,
+                )
+            }
         }
-    } else {
-        inconclusive(
-            "I could not find this in the indexed repo. It may exist elsewhere or be unindexed.",
-            None,
-        )
     }
+}
+
+/// True when diff evidence positively asserts the subject was removed this turn
+/// (a `from_diff` `route_exists` item with value=false).
+fn diff_says_removed(input: &VerdictInput) -> bool {
+    input.items.iter().any(|i| {
+        i.predicate.as_deref() == Some("route_exists")
+            && i.metadata_json
+                .get("from_diff")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            && i.value_json.as_ref().and_then(|v| v.as_bool()) == Some(false)
+    })
 }
 
 /// Value claim: compare the claimed value against a code/config definition.
@@ -609,5 +684,79 @@ mod tests {
         let r_logs = authority_rank(QuestionType::Usage, Authority::RuntimeLogs);
         let r_slack = authority_rank(QuestionType::Usage, Authority::SlackMessage);
         assert!(r_logs > r_slack);
+    }
+
+    // ---- diff-evidence existence (agent fact-checking) -------------------
+
+    fn route_exists_claim(op: ClaimOperator) -> StructuredClaim {
+        StructuredClaim {
+            is_checkable: true,
+            claim_type: ClaimType::RouteExists,
+            subject: Some("/v1/checkout".into()),
+            predicate: Some("route_exists".into()),
+            operator: op,
+            value: None,
+            unit: None,
+            time_window: None,
+            environment: None,
+            confidence: 0.8,
+            needs_clarification: false,
+            clarification_question: None,
+        }
+    }
+
+    fn diff_item(present: bool) -> EvidenceItem {
+        let mut it = def_item("route_exists", 0.0);
+        it.evidence_type = EvidenceType::Change;
+        it.value_json = Some(json!(present));
+        it.metadata_json = json!({ "from_diff": true });
+        it
+    }
+
+    #[test]
+    fn diff_removed_outranks_stale_index_for_still_present_claim() {
+        // Positive "still registered" claim, but the diff removed it while a
+        // stale index item still says it exists -> Contradicted (caught the lie).
+        let claim = route_exists_claim(ClaimOperator::Exists);
+        let mut stale = def_item("route_exists", 0.0);
+        stale.value_json = Some(json!(true));
+        let items = [diff_item(false), stale];
+        let d = decide(&VerdictInput {
+            claim: &claim,
+            items: &items,
+            query_results: &[],
+            usage_threshold: 0,
+            code_references: None,
+        });
+        assert_eq!(d.status, VerdictStatus::Contradicted);
+    }
+
+    #[test]
+    fn diff_added_supports_positive_existence_claim() {
+        let claim = route_exists_claim(ClaimOperator::Exists);
+        let items = [diff_item(true)];
+        let d = decide(&VerdictInput {
+            claim: &claim,
+            items: &items,
+            query_results: &[],
+            usage_threshold: 0,
+            code_references: None,
+        });
+        assert_eq!(d.status, VerdictStatus::Supported);
+    }
+
+    #[test]
+    fn diff_removed_supports_negative_existence_claim() {
+        // "I removed /x" and the diff shows it gone -> Supported.
+        let claim = route_exists_claim(ClaimOperator::NotExists);
+        let items = [diff_item(false)];
+        let d = decide(&VerdictInput {
+            claim: &claim,
+            items: &items,
+            query_results: &[],
+            usage_threshold: 0,
+            code_references: None,
+        });
+        assert_eq!(d.status, VerdictStatus::Supported);
     }
 }

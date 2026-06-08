@@ -10,6 +10,7 @@ pub mod commands;
 pub mod config_util;
 pub mod diagnostics;
 pub mod diff;
+pub mod diff_facts;
 pub mod docs;
 pub mod doctor;
 pub mod eval;

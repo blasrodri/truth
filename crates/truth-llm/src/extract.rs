@@ -137,20 +137,47 @@ impl ClaimExtractor for RegexExtractor {
             );
         }
 
-        // Route exists: "the /x route exists" / "we have a /x endpoint"
-        if (lower.contains("route") || lower.contains("endpoint")) && lower.contains("exist") {
-            if let Some(route) = Self::first_route(text) {
-                return claim(
-                    ClaimType::RouteExists,
-                    Some(route),
-                    Some("route_exists"),
-                    ClaimOperator::Exists,
-                    None,
-                    None,
-                    None,
-                    0.8,
-                );
-            }
+        // Route existence: positive ("the /x route exists", "/x is still
+        // registered/wired up/present", "I added the /x endpoint") and negative
+        // ("I removed/deleted the /x endpoint"). An agent reporting its own work
+        // phrases existence many ways, so match the verbs, not just "exist".
+        let mentions_route = lower.contains("route") || lower.contains("endpoint");
+        let exists_verb = lower.contains("exist")
+            || lower.contains("registered")
+            || lower.contains("wired up")
+            || lower.contains("still there")
+            || lower.contains("still present")
+            || lower.contains("added")
+            || lower.contains("created")
+            || lower.contains("added the")
+            || lower.contains("wired");
+        let removed_verb = lower.contains("removed")
+            || lower.contains("deleted")
+            || lower.contains("dropped")
+            || lower.contains("no longer exists")
+            || lower.contains("gone");
+        if (mentions_route || removed_verb || exists_verb) && Self::first_route(text).is_some() {
+            let route = Self::first_route(text).unwrap();
+            // Negative existence wins when present (e.g. "I removed /x") so the
+            // engine checks for ABSENCE; otherwise it's a positive existence claim.
+            let (op, conf) = if removed_verb {
+                (ClaimOperator::NotExists, 0.78)
+            } else if exists_verb {
+                (ClaimOperator::Exists, 0.8)
+            } else {
+                // bare route mention with no verb — weak, but still an existence check
+                (ClaimOperator::Exists, 0.55)
+            };
+            return claim(
+                ClaimType::RouteExists,
+                Some(route),
+                Some("route_exists"),
+                op,
+                None,
+                None,
+                None,
+                conf,
+            );
         }
 
         // Env var exists
