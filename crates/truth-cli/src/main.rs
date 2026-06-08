@@ -1,6 +1,6 @@
 //! `truth` CLI — deterministic engineering claim/evidence checker.
 
-use truth_cli::{ask, baseline, ci, claims, commands, diff, docs, doctor, eval, explain, inspect, owners, refs, report};
+use truth_cli::{ask, baseline, ci, claims, commands, diff, docs, doctor, eval, explain, inspect, owners, refs, report, verify_turn};
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
@@ -67,6 +67,20 @@ enum Command {
     Check {
         /// The claim to check, e.g. "nobody uses /v1/checkout anymore".
         claim: String,
+        /// Use a local log file for the log source (offline, when Loki is off).
+        #[arg(long)]
+        local_log: Option<String>,
+        /// Emit machine-readable JSON only.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fact-check an AI agent's message about its own work (multi-claim).
+    VerifyTurn {
+        /// What the agent said, e.g. "I added /v1/refund and bumped the timeout to 30s".
+        message: String,
+        /// Repo root to verify against (opens <repo>/.truth). Defaults to CWD config.
+        #[arg(long)]
+        repo: Option<String>,
         /// Use a local log file for the log source (offline, when Loki is off).
         #[arg(long)]
         local_log: Option<String>,
@@ -272,6 +286,9 @@ fn run(command: Command) -> anyhow::Result<()> {
         Command::Baseline { local_log, json } => baseline::baseline(local_log.as_deref(), json),
         Command::Check { claim, local_log, json } => {
             commands::check(&claim, local_log.as_deref(), json)
+        }
+        Command::VerifyTurn { message, repo, local_log, json } => {
+            verify_turn::verify_turn(&message, repo.as_deref(), local_log.as_deref(), json)
         }
         Command::Usage {
             subject,

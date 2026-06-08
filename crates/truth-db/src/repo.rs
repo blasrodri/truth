@@ -385,6 +385,32 @@ pub fn index_counts(conn: &Connection) -> Result<IndexCounts> {
     })
 }
 
+/// Freshness/emptiness of the index, so a verifier can refuse to silently
+/// check against a stale or empty store.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IndexStatus {
+    pub artifacts: i64,
+    /// Latest `observed_at` across artifacts (unix epoch seconds), if any.
+    pub last_indexed_at: Option<i64>,
+}
+
+impl IndexStatus {
+    pub fn is_empty(&self) -> bool {
+        self.artifacts == 0
+    }
+}
+
+/// Report whether the index has any artifacts and when it was last written.
+pub fn index_status(conn: &Connection) -> Result<IndexStatus> {
+    let artifacts = count_rows(conn, "artifacts")?;
+    let last_indexed_at: Option<i64> = conn.query_row(
+        "SELECT MAX(observed_at) FROM artifacts",
+        [],
+        |r| r.get::<_, Option<i64>>(0),
+    )?;
+    Ok(IndexStatus { artifacts, last_indexed_at })
+}
+
 /// Fetch a single check by id.
 pub fn get_check(conn: &Connection, check_id: &str) -> Result<Option<Check>> {
     let c = conn
