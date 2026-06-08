@@ -107,6 +107,13 @@ fn handle_tools_list(id: Option<Value>) -> Value {
                     "type": "string",
                     "description": "What the agent is about to claim about its work."
                 },
+                "repo": {
+                    "type": "string",
+                    "description": "Absolute path to the repo root being worked on. \
+                        Strongly recommended: truth opens <repo>/.truth and diffs that \
+                        working tree. If omitted, the server's working directory is used, \
+                        which may be wrong."
+                },
                 "local_log": {
                     "type": "string",
                     "description": "Optional path to a local log file for usage/error claims."
@@ -129,9 +136,10 @@ fn handle_tools_call(id: Option<Value>, req: &Value) -> Value {
         Some(m) if !m.trim().is_empty() => m.to_string(),
         _ => return tool_error(id, "`message` is required and must be non-empty"),
     };
+    let repo = args.get("repo").and_then(|r| r.as_str()).map(|s| s.to_string());
     let local_log = args.get("local_log").and_then(|l| l.as_str()).map(|s| s.to_string());
 
-    match run_verify(&message, local_log.as_deref()) {
+    match run_verify(&message, repo.as_deref(), local_log.as_deref()) {
         Ok((text, structured)) => result_response(
             id,
             json!({
@@ -145,8 +153,15 @@ fn handle_tools_call(id: Option<Value>, req: &Value) -> Value {
 }
 
 /// Run the verification and return (human-readable text, structured JSON).
-fn run_verify(message: &str, local_log: Option<&str>) -> anyhow::Result<(String, Value)> {
-    let config = load_config()?;
+fn run_verify(
+    message: &str,
+    repo: Option<&str>,
+    local_log: Option<&str>,
+) -> anyhow::Result<(String, Value)> {
+    let mut config = load_config()?;
+    if let Some(r) = repo {
+        verify_turn::retarget_repo(&mut config, r);
+    }
     let conn = truth_db::open(&config.database.path)?;
     let report = verify_turn::verify(&conn, &config, message, local_log)?;
     let text = verify_turn::render_text(&report);

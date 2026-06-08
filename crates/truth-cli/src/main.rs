@@ -78,6 +78,9 @@ enum Command {
     VerifyTurn {
         /// What the agent said, e.g. "I added /v1/refund and bumped the timeout to 30s".
         message: String,
+        /// Repo root to verify against (opens <repo>/.truth). Defaults to CWD config.
+        #[arg(long)]
+        repo: Option<String>,
         /// Use a local log file for the log source (offline, when Loki is off).
         #[arg(long)]
         local_log: Option<String>,
@@ -284,8 +287,8 @@ fn run(command: Command) -> anyhow::Result<()> {
         Command::Check { claim, local_log, json } => {
             commands::check(&claim, local_log.as_deref(), json)
         }
-        Command::VerifyTurn { message, local_log, json } => {
-            verify_turn::verify_turn(&message, local_log.as_deref(), json)
+        Command::VerifyTurn { message, repo, local_log, json } => {
+            verify_turn::verify_turn(&message, repo.as_deref(), local_log.as_deref(), json)
         }
         Command::Usage {
             subject,

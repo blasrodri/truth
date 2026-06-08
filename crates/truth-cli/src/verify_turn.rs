@@ -29,10 +29,54 @@ pub struct ClaimVerdict {
     pub citation: Option<String>,
 }
 
+/// How trustworthy the underlying index is for this verification. A verifier
+/// that silently checks against an empty or stale index can FALSE-PASS, which is
+/// worse than no verifier — so we make the index state explicit in every report.
+#[derive(Debug, Clone)]
+pub struct Freshness {
+    /// The repo root whose `.truth` store was queried.
+    pub repo: String,
+    pub artifacts: i64,
+    pub last_indexed_at: Option<i64>,
+    /// Age of the index in seconds at check time, if known.
+    pub age_secs: Option<i64>,
+}
+
+impl Freshness {
+    pub fn is_empty(&self) -> bool {
+        self.artifacts == 0
+    }
+    /// Stale if older than 24h. Diff claims are still fresh (read live), but
+    /// index-backed claims (usage/exists/config) may be out of date.
+    pub fn is_stale(&self) -> bool {
+        self.age_secs.map(|a| a > 24 * 3600).unwrap_or(false)
+    }
+    /// A human-facing warning when the index can't be fully trusted.
+    pub fn warning(&self) -> Option<String> {
+        if self.is_empty() {
+            Some(format!(
+                "index is EMPTY for {} — only working-tree diff claims were checked; \
+                 run `truth index {}` so repo/usage/config claims can be verified.",
+                self.repo, self.repo
+            ))
+        } else if self.is_stale() {
+            let days = self.age_secs.unwrap_or(0) / 86_400;
+            Some(format!(
+                "index for {} is ~{}d old — index-backed claims may be out of date; \
+                 re-run `truth index {}`.",
+                self.repo, days, self.repo
+            ))
+        } else {
+            None
+        }
+    }
+}
+
 /// Aggregate outcome for a whole agent turn.
 pub struct TurnReport {
     pub message: String,
     pub verdicts: Vec<ClaimVerdict>,
+    pub freshness: Freshness,
 }
 
 impl TurnReport {
@@ -63,6 +107,15 @@ impl TurnReport {
                 "contradicted": self.contradicted(),
                 "refused": self.refused(),
                 "claims": self.verdicts.len(),
+            },
+            "index": {
+                "repo": self.freshness.repo,
+                "artifacts": self.freshness.artifacts,
+                "empty": self.freshness.is_empty(),
+                "stale": self.freshness.is_stale(),
+                "last_indexed_at": self.freshness.last_indexed_at,
+                "age_secs": self.freshness.age_secs,
+                "warning": self.freshness.warning(),
             },
             "claims": self.verdicts.iter().map(|v| serde_json::json!({
                 "text": v.text,
@@ -169,6 +222,17 @@ pub fn verify(
     message: &str,
     local_log: Option<&str>,
 ) -> Result<TurnReport> {
+    // Capture index freshness FIRST so the report can flag a stale/empty store
+    // — a verifier that silently checks against no data must not look "clean".
+    let status = truth_db::repo::index_status(conn)?;
+    let age_secs = status.last_indexed_at.map(|t| (truth_core::now_secs() - t).max(0));
+    let freshness = Freshness {
+        repo: config.repo.root.clone(),
+        artifacts: status.artifacts,
+        last_indexed_at: status.last_indexed_at,
+        age_secs,
+    };
+
     let mut verdicts = Vec::new();
     for seg in segment(message) {
         let outcome = run_check(conn, config, &seg, Trigger::Cli, local_log)?;
@@ -181,7 +245,7 @@ pub fn verify(
             citation,
         });
     }
-    Ok(TurnReport { message: message.to_string(), verdicts })
+    Ok(TurnReport { message: message.to_string(), verdicts, freshness })
 }
 
 fn first_citation(evidence: &[EvidenceJson]) -> Option<String> {
@@ -219,12 +283,35 @@ pub fn render_text(report: &TurnReport) -> String {
     if report.has_contradiction() {
         out.push_str("\n  ⚠ The agent's message contradicts the evidence above.\n");
     }
+    // Trust caveat: if the index is empty or stale, the index-backed verdicts
+    // above are unreliable. Surface it loudly so a "clean" result isn't trusted
+    // blindly.
+    if let Some(w) = report.freshness.warning() {
+        out.push_str(&format!("\n  ⚠ {w}\n"));
+    }
     out.trim_end().to_string()
 }
 
+/// Point `config` at an explicit repo root so we open THAT repo's `.truth`
+/// store and diff THAT working tree — never silently trusting the process CWD.
+/// The DB lives at `<repo>/.truth/truth.sqlite`.
+pub fn retarget_repo(config: &mut Config, repo: &str) {
+    config.repo.root = repo.to_string();
+    let db = std::path::Path::new(repo).join(".truth").join("truth.sqlite");
+    config.database.path = db.to_string_lossy().into_owned();
+}
+
 /// CLI entry point for `truth verify-turn`.
-pub fn verify_turn(message: &str, local_log: Option<&str>, json: bool) -> Result<()> {
-    let config = load_config()?;
+pub fn verify_turn(
+    message: &str,
+    repo: Option<&str>,
+    local_log: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let mut config = load_config()?;
+    if let Some(r) = repo {
+        retarget_repo(&mut config, r);
+    }
     let conn = crate::commands::open_db(&config)?;
     let report = verify(&conn, &config, message, local_log)?;
 
@@ -253,6 +340,29 @@ mod tests {
         assert!(segs.iter().any(|s| s.contains("/v1/refund")));
         assert!(segs.iter().any(|s| s.contains("timeout")));
         assert!(segs.iter().any(|s| s.contains("/v1/checkout")));
+    }
+
+    #[test]
+    fn empty_index_warns_and_stale_index_warns() {
+        let empty = Freshness { repo: ".".into(), artifacts: 0, last_indexed_at: Some(100), age_secs: Some(10) };
+        assert!(empty.is_empty());
+        assert!(empty.warning().unwrap().contains("EMPTY"));
+
+        let stale = Freshness { repo: ".".into(), artifacts: 5, last_indexed_at: Some(0), age_secs: Some(3 * 86_400) };
+        assert!(stale.is_stale());
+        assert!(stale.warning().unwrap().contains("old"));
+
+        let fresh = Freshness { repo: ".".into(), artifacts: 5, last_indexed_at: Some(0), age_secs: Some(60) };
+        assert!(fresh.warning().is_none());
+    }
+
+    #[test]
+    fn retarget_points_db_under_repo() {
+        let mut cfg = Config::default();
+        retarget_repo(&mut cfg, "/work/proj");
+        assert_eq!(cfg.repo.root, "/work/proj");
+        assert!(cfg.database.path.ends_with("/work/proj/.truth/truth.sqlite")
+            || cfg.database.path.contains("/work/proj/.truth"));
     }
 
     #[test]
