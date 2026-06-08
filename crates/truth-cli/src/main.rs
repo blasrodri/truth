@@ -2,7 +2,7 @@
 
 use truth_cli::{
     ask, baseline, ci, claims, commands, diff, docs, doctor, eval, explain, inspect, owners, refs,
-    report, verify_turn,
+    report, settings, verify_turn,
 };
 
 use clap::{Parser, Subcommand};
@@ -232,6 +232,11 @@ enum Command {
         #[command(subcommand)]
         cmd: DbCommand,
     },
+    /// Read or change truth.toml settings (extractor, include/exclude, llm, ...).
+    Settings {
+        #[command(subcommand)]
+        cmd: SettingsCommand,
+    },
     /// Placeholder for future Slack/server mode.
     Serve,
 }
@@ -240,6 +245,28 @@ enum Command {
 enum DbCommand {
     /// Run SQLite migrations.
     Migrate,
+}
+
+#[derive(Subcommand)]
+enum SettingsCommand {
+    /// List every configurable setting, its current value, and help.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print one setting's value.
+    Get {
+        key: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set one setting (validated; preserves the rest of truth.toml).
+    Set {
+        key: String,
+        value: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -372,6 +399,11 @@ fn run(command: Command) -> anyhow::Result<()> {
         } => report::report(&claim_file, local_log.as_deref(), &format, out.as_deref()),
         Command::Diff { old, new, json } => diff::diff(&old, &new, json),
         Command::Ci { .. } => unreachable!("ci handled before run()"),
+        Command::Settings { cmd } => match cmd {
+            SettingsCommand::List { json } => settings::list(json),
+            SettingsCommand::Get { key, json } => settings::get(&key, json),
+            SettingsCommand::Set { key, value, json } => settings::set(&key, &value, json),
+        },
         Command::Db { cmd } => match cmd {
             DbCommand::Migrate => commands::db_migrate(),
         },

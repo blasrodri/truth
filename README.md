@@ -152,6 +152,25 @@ the diff outranking a possibly-stale index for "I just changed X" claims.
 source for *I ran*), and judgment claims (*"this is cleaner / faster"* — no
 measurable subject). Refused ≠ confirmed.
 
+## Configuration
+
+Behavior lives in `truth.toml` (written by `truth init`). Tweak it without
+hand-editing — `truth settings` validates and preserves the rest of the file,
+so a user *or an agent* can change knobs programmatically:
+
+```bash
+truth settings list                              # every knob, current value, help
+truth settings set indexer.extractor mixed       # turn on AST precision (symbols/routes)
+truth settings set repo.include src,lib,app      # what to index
+truth settings set llm.enabled true              # use an LLM to parse claims (engine still decides)
+truth settings get indexer.extractor --json
+```
+
+The highest-value knob is **`indexer.extractor`**: `regex` (default, fast) ·
+`ast` · `mixed` (AST-precise function/struct/route definitions for Rust, so a
+symbol named only in a comment isn't mistaken for a real definition). Re-run
+`truth index .` after changing it.
+
 ## How it works
 
 ```

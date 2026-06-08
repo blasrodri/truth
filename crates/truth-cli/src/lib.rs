@@ -20,4 +20,5 @@ pub mod owners;
 pub mod refs;
 pub mod report;
 pub mod service;
+pub mod settings;
 pub mod verify_turn;
