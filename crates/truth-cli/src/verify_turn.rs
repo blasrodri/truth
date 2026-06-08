@@ -255,17 +255,26 @@ pub fn verify_claims(
     // its own data current. The incremental pass skips unchanged files (one
     // parallel hash pass, ~10-50ms on a clean repo), so this is nearly free and
     // means index-backed claims ("X is unused", "MAX_RETRIES is 5") reflect the
-    // CURRENT working tree, not a stale snapshot. Best-effort: if it fails
-    // (e.g. the path isn't indexable here), we fall through and the freshness
-    // warning still fires.
+    // CURRENT working tree, not a stale snapshot.
+    //
+    // BUT: if the index was built by a binary with a different INDEX FORMAT
+    // (e.g. after upgrading truth, when extraction logic changed), an
+    // incremental pass would keep the old binary's evidence for unchanged files
+    // — silently serving stale-format data. In that case we force a FULL rebuild
+    // and re-stamp the format version. Best-effort throughout: on failure we
+    // fall through and the freshness warning still fires.
+    let format_stale = truth_db::index_format_is_stale(conn).unwrap_or(false);
     let auto_indexed = truth_indexer::index_repo_opts(
         conn,
         &config.repo,
         Some(std::path::Path::new(&config.repo.root)),
-        true, // incremental
+        !format_stale, // incremental unless the format changed → full rebuild
         config.indexer.extractor,
     )
     .is_ok();
+    if auto_indexed {
+        let _ = truth_db::set_index_format_version(conn);
+    }
 
     // Capture index freshness AFTER the refresh so the report reflects current
     // state — a verifier that silently checks against no data must not look

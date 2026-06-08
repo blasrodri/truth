@@ -7,6 +7,33 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::path::Path;
 
+/// Version of the **index format** — the extraction/evidence logic, NOT the
+/// crate semver. Bump this whenever a release changes how code is extracted into
+/// evidence (new claim types, sharper relevance gates, AST changes, ...), so an
+/// index built by an older binary is detected as stale and rebuilt. Stored in
+/// SQLite's `PRAGMA user_version`.
+pub const INDEX_FORMAT_VERSION: i64 = 2;
+
+/// Read the index-format version stamped on this DB (0 if never stamped).
+pub fn index_format_version(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+}
+
+/// Stamp the current `INDEX_FORMAT_VERSION` onto the DB (call after a full index).
+pub fn set_index_format_version(conn: &Connection) -> Result<()> {
+    conn.pragma_update(None, "user_version", INDEX_FORMAT_VERSION)?;
+    Ok(())
+}
+
+/// True when the DB was built by a binary with a different index format than the
+/// running one — its evidence may be extracted by stale logic and should be
+/// fully rebuilt, not incrementally patched.
+pub fn index_format_is_stale(conn: &Connection) -> Result<bool> {
+    let stored = index_format_version(conn)?;
+    // 0 = legacy/never-stamped index → treat as stale so it gets rebuilt once.
+    Ok(stored != INDEX_FORMAT_VERSION)
+}
+
 /// Open (creating parent dirs if needed), enable foreign keys, and migrate.
 pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
     let path = path.as_ref();

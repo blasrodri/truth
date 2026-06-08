@@ -70,6 +70,63 @@ fn ensure_gitignored(patterns: &[&str]) -> Result<Option<Vec<String>>> {
     Ok(Some(to_add))
 }
 
+/// The crate version this binary was built from.
+pub const TRUTH_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Check GitHub for a newer release and, if found, print a one-line NOTICE with
+/// the upgrade command. truth never downloads or runs anything — it only tells
+/// you. Network failures are silent (returns Ok with no notice) so this never
+/// blocks. `quiet` suppresses the "you're up to date" line.
+pub fn upgrade_check(quiet: bool) -> Result<()> {
+    let latest = match fetch_latest_release_tag() {
+        Some(t) => t,
+        None => {
+            if !quiet {
+                println!("Could not reach GitHub to check for updates.");
+            }
+            return Ok(());
+        }
+    };
+    let latest_v = latest.trim_start_matches('v');
+    if is_newer(latest_v, TRUTH_VERSION) {
+        println!("⬆ truth {latest_v} is available (you have {TRUTH_VERSION}).");
+        println!("  Upgrade: download from https://github.com/blasrodri/truth/releases/latest");
+        println!("  or, if installed via cargo: cargo install --git https://github.com/blasrodri/truth truth-cli truth-mcp");
+    } else if !quiet {
+        println!("truth {TRUTH_VERSION} is up to date.");
+    }
+    Ok(())
+}
+
+/// GET the latest release tag from the GitHub API. None on any failure.
+fn fetch_latest_release_tag() -> Option<String> {
+    let resp = ureq::get("https://api.github.com/repos/blasrodri/truth/releases/latest")
+        .set("User-Agent", "truth-cli")
+        .timeout(std::time::Duration::from_secs(4))
+        .call()
+        .ok()?;
+    let json: serde_json::Value = resp.into_json().ok()?;
+    json.get("tag_name")?.as_str().map(|s| s.to_string())
+}
+
+/// Simple semver-ish "is `a` newer than `b`" by numeric component comparison.
+fn is_newer(a: &str, b: &str) -> bool {
+    fn parts(s: &str) -> Vec<u64> {
+        s.split('.').map(|p| p.parse().unwrap_or(0)).collect()
+    }
+    let (a, b) = (parts(a), parts(b));
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (
+            a.get(i).copied().unwrap_or(0),
+            b.get(i).copied().unwrap_or(0),
+        );
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
 /// `truth serve` — informational placeholder (exits zero).
 pub fn serve() -> Result<()> {
     println!("`truth serve` is not implemented yet.\n");
@@ -100,10 +157,15 @@ pub fn index(path: &str, stats_flag: bool, full: bool, extractor: Option<&str>) 
             .with_context(|| format!("unknown --extractor `{s}` (regex|ast|mixed)"))?,
         None => config.indexer.extractor,
     };
-    // Incremental by default. But an explicit `--extractor` changes extraction
-    // policy without changing file contents, so the incremental fast-path would
-    // skip everything and silently keep the old evidence — force a full rebuild.
-    let force_full = full || extractor.is_some();
+    // Incremental by default. Force a full rebuild when: `--full`; an explicit
+    // `--extractor` (changes extraction policy without changing file contents,
+    // so the incremental fast-path would skip everything and keep old evidence);
+    // or the stored index format predates this binary (post-upgrade).
+    let format_stale = truth_db::index_format_is_stale(&conn).unwrap_or(false);
+    let force_full = full || extractor.is_some() || format_stale;
+    if format_stale && !full {
+        println!("Index was built by a different truth version — rebuilding in full.");
+    }
     let stats = truth_indexer::index_repo_opts(
         &conn,
         &config.repo,
@@ -111,6 +173,7 @@ pub fn index(path: &str, stats_flag: bool, full: bool, extractor: Option<&str>) 
         !force_full,
         mode,
     )?;
+    truth_db::set_index_format_version(&conn)?;
     println!(
         "Indexed {} files → {} artifacts, {} evidence items (extractor: {}).",
         stats.files,

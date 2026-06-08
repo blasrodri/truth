@@ -77,6 +77,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Check GitHub for a newer truth release (notify only — never downloads).
+    UpgradeCheck,
     /// Fact-check an AI agent's message about its own work (multi-claim).
     VerifyTurn {
         /// What the agent said, e.g. "I added /v1/refund and bumped the timeout to 30s".
@@ -297,6 +299,7 @@ fn run(command: Command) -> anyhow::Result<()> {
             local_log,
             json,
         } => commands::check(&claim, local_log.as_deref(), json),
+        Command::UpgradeCheck => commands::upgrade_check(false),
         Command::VerifyTurn {
             message,
             repo,
