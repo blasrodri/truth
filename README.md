@@ -102,6 +102,17 @@ registration works across all your projects.
 > regex parser entirely for ~tens of tokens, while still never letting a model
 > decide truth. Omissions are caught by the `message` backstop.
 
+**Guaranteeing the agent uses `claims`.** The tool description asks for it, but
+to make it a habit in your own repos, add a line to your agent's project
+instructions (e.g. `CLAUDE.md`):
+
+```md
+Before telling me a code change is done, call the `verify_turn` tool: extract
+your concrete factual claims (values set, routes/functions added or removed)
+into the `claims` array and pass the repo path. Fix anything it marks
+`contradicted` before reporting done.
+```
+
 It returns the verdict table as text plus `structuredContent` (the JSON below),
 including an `index` block reporting whether the index is empty or stale — so a
 "clean" result is never trusted blindly.

@@ -86,9 +86,12 @@ fn handle_initialize(id: Option<Value>) -> Value {
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "truth", "version": env!("CARGO_PKG_VERSION") },
             "instructions":
-                "Call `verify_turn` with the message you are about to send the user \
-                 about code you changed. truth checks each claim against the repo, \
-                 the working-tree diff, and logs, and returns a deterministic, cited \
+                "Before telling the user a code change is done, call `verify_turn`. \
+                 Extract the concrete factual claims from your message and pass them \
+                 in the `claims` array (one short sentence each) — you parse them more \
+                 reliably than truth can re-parse prose, and it's free. Also pass the \
+                 raw `message`. truth checks each claim against the repo, the \
+                 working-tree diff, and logs and returns a deterministic, cited \
                  verdict. Fix or soften any claim it marks `contradicted`; claims it \
                  marks `refused` are unverifiable (e.g. 'tests pass') — do not treat \
                  a refusal as confirmation."
@@ -100,13 +103,19 @@ fn handle_tools_list(id: Option<Value>) -> Value {
     let tool = json!({
         "name": "verify_turn",
         "description":
-            "Fact-check a coding agent's own message about its work. Splits the \
-             message into claims and checks each against the indexed repo + \
-             working-tree git diff + logs. Returns supported / contradicted / \
-             refused verdicts with citations. Deterministic: the verdict comes \
-             from evidence, not from a model. Use before telling the user a change \
-             is done to catch over-claims (wrong values, routes you said you \
-             added/removed). 'refused' means unverifiable, NOT confirmed.",
+            "Fact-check your own claims about code you changed, BEFORE telling the \
+             user a change is done — to catch over-claims (wrong values, routes or \
+             functions you said you added/removed). \
+             HOW TO CALL: extract the concrete factual claims from what you're about \
+             to say and pass them in `claims` (one short sentence each) — you parse \
+             them far more reliably than truth can re-parse prose, and it's free \
+             since you're already writing the message. Also pass the raw `message` \
+             as a backstop. \
+             Each claim is checked against the indexed repo + working-tree git diff \
+             + logs and gets a cited supported / contradicted / refused verdict. \
+             Deterministic: the verdict comes from evidence, not from a model — so \
+             listing a claim can't make it pass. 'refused' means unverifiable, NOT \
+             confirmed.",
         "inputSchema": {
             "type": "object",
             "properties": {
