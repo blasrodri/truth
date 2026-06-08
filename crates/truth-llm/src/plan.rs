@@ -24,7 +24,7 @@ pub fn plan_for(
     };
 
     match claim.claim_type {
-        ClaimType::UsageCount | ClaimType::DependencyUsed => {
+        ClaimType::UsageCount => {
             queries.push(log_query(
                 log_source,
                 QueryType::RouteCount,
@@ -35,6 +35,18 @@ pub fn plan_for(
             ));
             // Cross-check existence in the repo.
             queries.push(repo_query(QueryType::RouteExists, subject.clone()));
+        }
+        ClaimType::DependencyUsed => {
+            // A dependency is answered by the manifest (declared?) plus code use.
+            queries.push(repo_query(QueryType::DependencyExists, subject.clone()));
+            queries.push(log_query(
+                log_source,
+                QueryType::RouteCount,
+                subject.clone(),
+                window.clone(),
+                environment.clone(),
+                service.clone(),
+            ));
         }
         ClaimType::ErrorStillHappening => {
             queries.push(log_query(

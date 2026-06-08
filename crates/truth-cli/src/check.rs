@@ -353,6 +353,25 @@ fn run_repo_query(
             }
             items
         }
+        QueryType::DependencyExists => {
+            let subj = needle.unwrap_or_default();
+            let items: Vec<EvidenceItem> = truth_db::repo::evidence_by_subject(conn, &subj)?
+                .into_iter()
+                .filter(|i| i.predicate.as_deref() == Some("dependency_exists"))
+                .collect();
+            if let Some(it) = items.first() {
+                lines.push(format!("repo: `{subj}` is a declared dependency ({})", uri_line(it)));
+                json.push(EvidenceJson {
+                    source: "repo".into(),
+                    kind: "dependency_exists".into(),
+                    subject: Some(subj.clone()),
+                    value: Some(true.into()),
+                    unit: None,
+                    citation: uri_line_opt(it),
+                });
+            }
+            items
+        }
         QueryType::ConfigValue | QueryType::ConstantValue => {
             // Look up by the predicate keyword (port, retry_count, timeout, ...).
             let predicate = needle.unwrap_or_default();

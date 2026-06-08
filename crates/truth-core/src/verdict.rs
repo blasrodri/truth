@@ -147,8 +147,61 @@ fn route_exists_in_repo(input: &VerdictInput) -> bool {
     })
 }
 
+/// Whether the subject is declared as a dependency in the index (Cargo.toml,
+/// package.json, requirements.txt, ...), via the `dependency_exists` predicate.
+fn dependency_declared(input: &VerdictInput) -> bool {
+    input.items.iter().any(|i| {
+        i.predicate.as_deref() == Some("dependency_exists")
+            && i.value_json.as_ref().and_then(|v| v.as_bool()).unwrap_or(false)
+    })
+}
+
 /// Usage claim: "nobody uses X" → expected count 0.
 fn decide_usage(input: &VerdictInput) -> VerdictDecision {
+    use crate::claim::{ClaimOperator, ClaimType};
+    // Dependency claims resolve against the declared-dependency index fact first:
+    // a package listed in the manifest IS a dependency, regardless of how often
+    // its bare name appears in source. This is the authoritative signal.
+    if input.claim.claim_type == ClaimType::DependencyUsed {
+        let declared = dependency_declared(input);
+        let claims_absent = input.claim.operator == ClaimOperator::NotExists;
+        // Only decide here when we have a manifest signal or an explicit absence
+        // claim; otherwise fall through to the code-reference logic below.
+        if declared || claims_absent {
+            let subject = input.claim.subject.as_deref().unwrap_or("the dependency");
+            return match (declared, claims_absent) {
+                (true, false) => VerdictDecision {
+                    status: VerdictStatus::Supported,
+                    confidence: 0.9,
+                    evidence_ids: vec!["repo:dependency_exists".into()],
+                    caveats: vec![format!("`{subject}` is declared as a dependency in the manifest.")],
+                    suggested_action: None,
+                },
+                (true, true) => VerdictDecision {
+                    status: VerdictStatus::Contradicted,
+                    confidence: 0.9,
+                    evidence_ids: vec!["repo:dependency_exists".into()],
+                    caveats: vec![format!("`{subject}` is still declared as a dependency.")],
+                    suggested_action: Some("It is still a dependency; re-check the change.".into()),
+                },
+                (false, true) => VerdictDecision {
+                    status: VerdictStatus::Supported,
+                    confidence: 0.78,
+                    evidence_ids: vec![],
+                    caveats: vec![format!("`{subject}` is not declared as a dependency.")],
+                    suggested_action: None,
+                },
+                (false, false) => VerdictDecision {
+                    status: VerdictStatus::Contradicted,
+                    confidence: 0.75,
+                    evidence_ids: vec![],
+                    caveats: vec![format!("`{subject}` is not declared as a dependency in the manifest.")],
+                    suggested_action: None,
+                },
+            };
+        }
+    }
+
     let observed = total_observed_count(input);
     let has_logs = input
         .query_results
