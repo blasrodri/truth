@@ -112,7 +112,21 @@ fn handle_tools_list(id: Option<Value>) -> Value {
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "What the agent is about to claim about its work."
+                    "description": "What the agent is about to claim about its work \
+                        (the raw prose). Always include this — truth scans it as a \
+                        backstop so claims you forget to list still get checked."
+                },
+                "claims": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "RECOMMENDED. The individual factual claims from \
+                        your message, each as a short self-contained sentence (e.g. \
+                        [\"I set MAX_RETRIES to 5\", \"I added the /v1/refund route\", \
+                        \"I removed the parse_legacy function\"]). You (the calling \
+                        model) extract these from your own message — it's free and far \
+                        more reliable than truth re-parsing your prose. Only list \
+                        checkable state claims; skip vague/subjective ones. truth still \
+                        decides each verdict from real evidence, not from your wording."
                 },
                 "repo": {
                     "type": "string",
@@ -155,8 +169,19 @@ fn handle_tools_call(id: Option<Value>, req: &Value) -> Value {
         .get("local_log")
         .and_then(|l| l.as_str())
         .map(|s| s.to_string());
+    // Optional agent-extracted claims (preferred over re-parsing the prose).
+    let claims: Option<Vec<String>> = args.get("claims").and_then(|c| c.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect()
+    });
 
-    match run_verify(&message, repo.as_deref(), local_log.as_deref()) {
+    match run_verify(
+        &message,
+        claims.as_deref(),
+        repo.as_deref(),
+        local_log.as_deref(),
+    ) {
         Ok((text, structured)) => result_response(
             id,
             json!({
@@ -172,6 +197,7 @@ fn handle_tools_call(id: Option<Value>, req: &Value) -> Value {
 /// Run the verification and return (human-readable text, structured JSON).
 fn run_verify(
     message: &str,
+    claims: Option<&[String]>,
     repo: Option<&str>,
     local_log: Option<&str>,
 ) -> anyhow::Result<(String, Value)> {
@@ -180,7 +206,7 @@ fn run_verify(
         verify_turn::retarget_repo(&mut config, r);
     }
     let conn = truth_db::open(&config.database.path)?;
-    let report = verify_turn::verify(&conn, &config, message, local_log)?;
+    let report = verify_turn::verify_claims(&conn, &config, message, claims, local_log)?;
     let text = verify_turn::render_text(&report);
     Ok((text, report.to_json()))
 }

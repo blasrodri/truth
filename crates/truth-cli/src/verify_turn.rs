@@ -226,10 +226,28 @@ fn is_plausible_claim(s: &str) -> bool {
 }
 
 /// Run a full turn verification against the indexed repo / diff / logs.
+///
+/// Convenience wrapper: derive claims from `message` by segmenting it.
 pub fn verify(
     conn: &Connection,
     config: &Config,
     message: &str,
+    local_log: Option<&str>,
+) -> Result<TurnReport> {
+    verify_claims(conn, config, message, None, local_log)
+}
+
+/// Verify a turn. If `claims` is `Some`, those agent-provided claim strings are
+/// checked directly (one verdict each) — the calling LLM did the parsing, which
+/// is more reliable than our regex segmenter and costs nothing extra since the
+/// agent is already mid-turn. If `claims` is `None`, the raw `message` is
+/// segmented and parsed here as a fallback. The deterministic engine still
+/// decides every verdict from real evidence — the agent only supplies phrasing.
+pub fn verify_claims(
+    conn: &Connection,
+    config: &Config,
+    message: &str,
+    claims: Option<&[String]>,
     local_log: Option<&str>,
 ) -> Result<TurnReport> {
     // Auto-refresh the index before checking. The agent calling this has no idea
@@ -264,8 +282,19 @@ pub fn verify(
         auto_indexed,
     };
 
+    // Agent-provided structured claims take precedence (precise, no segmenting);
+    // otherwise fall back to segmenting the raw message ourselves.
+    let segments: Vec<String> = match claims {
+        Some(list) => list
+            .iter()
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect(),
+        None => segment(message),
+    };
+
     let mut verdicts = Vec::new();
-    for seg in segment(message) {
+    for seg in segments {
         let outcome = run_check(conn, config, &seg, Trigger::Cli, local_log)?;
         let citation = first_citation(&outcome.evidence);
         verdicts.push(ClaimVerdict {

@@ -81,9 +81,16 @@ registration works across all your projects.
 
 | Argument | Required | Meaning |
 |---|---|---|
-| `message` | yes | What the agent is about to claim about its work. |
+| `message` | yes | The agent's raw prose about its work. truth scans it as a backstop, so claims you forget to list in `claims` still get checked. |
+| `claims` | recommended | An array of the individual factual claims, each a short self-contained sentence (`["I set MAX_RETRIES to 5", "I added the /v1/refund route"]`). The **calling model extracts these from its own message** — it's free (the agent is already mid-turn) and far more reliable than truth re-parsing prose. truth still decides each verdict from real evidence, not from the wording. |
 | `repo` | recommended | Absolute path to the repo root. `truth` opens `<repo>/.truth` and diffs that working tree. Omit it and the server falls back to its own working directory, which may be wrong. |
 | `local_log` | no | Path to a local log file for usage/error claims. |
+
+> **Why `claims` is the elegant path:** truth keeps the hybrid architecture —
+> the LLM *parses*, the deterministic engine *decides*. By having the agent
+> (already an LLM, already mid-turn) extract its own claims, truth sidesteps its
+> regex parser entirely for ~tens of tokens, while still never letting a model
+> decide truth. Omissions are caught by the `message` backstop.
 
 It returns the verdict table as text plus `structuredContent` (the JSON below),
 including an `index` block reporting whether the index is empty or stale — so a
