@@ -146,19 +146,44 @@ pub fn run_check(
     let mut symbol_status: Option<String> = None;
     if matches!(claim.claim_type, truth_core::claim::ClaimType::SymbolExists) {
         if let Some(subject) = claim.subject.as_deref() {
-            let report = crate::refs::build_report(conn, subject)?;
-            if report.files_scanned > 0 {
-                symbol_status = Some(report.status.clone());
-                evidence_lines.push(match report.status.as_str() {
-                    "referenced" => format!(
-                        "code: `{subject}` is defined/referenced ({} hit(s))",
-                        report.count
-                    ),
-                    "definition_only" => {
-                        format!("code: `{subject}` is defined (no other references)")
-                    }
-                    _ => format!("code: `{subject}` not found in the indexed code"),
+            // Prefer AST `symbol_exists` definitions: a real `fn`/`struct`/...
+            // declaration, never fooled by the name in a comment or string. If the
+            // repo was indexed with AST (any symbol_exists facts exist), trust AST
+            // EXCLUSIVELY for symbols — a symbol with no AST definition genuinely
+            // isn't defined, so we must NOT fall back to the text scan (which would
+            // match comments/strings and re-introduce the imprecision).
+            let ast_def = truth_db::repo::evidence_by_subject(conn, subject)?
+                .into_iter()
+                .any(|i| {
+                    i.predicate.as_deref() == Some("symbol_exists")
+                        && i.value_json
+                            .as_ref()
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
                 });
+            let repo_has_ast_symbols = truth_db::repo::has_predicate(conn, "symbol_exists")?;
+            if ast_def {
+                symbol_status = Some("definition_only".to_string());
+                evidence_lines.push(format!("code: `{subject}` is a defined symbol (AST)"));
+            } else if repo_has_ast_symbols {
+                // AST mode is active and this symbol has no definition → absent.
+                symbol_status = Some("unreferenced".to_string());
+                evidence_lines.push(format!("code: `{subject}` has no definition (AST)"));
+            } else {
+                let report = crate::refs::build_report(conn, subject)?;
+                if report.files_scanned > 0 {
+                    symbol_status = Some(report.status.clone());
+                    evidence_lines.push(match report.status.as_str() {
+                        "referenced" => format!(
+                            "code: `{subject}` is defined/referenced ({} hit(s))",
+                            report.count
+                        ),
+                        "definition_only" => {
+                            format!("code: `{subject}` is defined (no other references)")
+                        }
+                        _ => format!("code: `{subject}` not found in the indexed code"),
+                    });
+                }
             }
         }
     }

@@ -268,10 +268,14 @@ fn build_from(
 
     if use_ast_routes {
         for af in truth_ast::extract_rust(&contents).unwrap_or_default() {
-            if af.predicate != "route_exists" {
-                continue; // only routes come from AST for now
+            match af.predicate.as_str() {
+                "route_exists" => evidence.push(ast_route_evidence(&artifact.id, uri, af)),
+                // AST-precise function/type definitions feed SymbolExists claims:
+                // only real `fn`/`struct`/... definitions, never a name in a
+                // comment or string, which a regex scan can't distinguish.
+                "symbol_exists" => evidence.push(ast_symbol_evidence(&artifact.id, uri, af)),
+                _ => {} // constants still come from the regex extractor for now
             }
-            evidence.push(ast_route_evidence(&artifact.id, uri, af));
         }
     }
 
@@ -369,6 +373,44 @@ fn ast_route_evidence(
         unit: None,
         // AST routes are structurally precise; rate confidence at least as high
         // as regex (1.0 here).
+        confidence: 1.0,
+        authority: Authority::Code,
+        valid_from: None,
+        valid_to: None,
+        extraction_method: ExtractionMethod::Ast,
+        metadata_json: metadata,
+    };
+    (span, item)
+}
+
+/// AST symbol definition → a `symbol_exists` evidence item. Structurally
+/// precise: the subject is a real declaration, not a text occurrence.
+fn ast_symbol_evidence(
+    artifact_id: &str,
+    uri: &str,
+    af: truth_ast::AstFact,
+) -> (Span, EvidenceItem) {
+    let span = Span {
+        id: new_id(),
+        artifact_id: artifact_id.to_string(),
+        text: af.text.clone(),
+        start_line: Some(af.line),
+        end_line: Some(af.line),
+        start_byte: None,
+        end_byte: None,
+        metadata_json: empty_json(),
+    };
+    let metadata = serde_json::json!({ "uri": uri, "line": af.line, "extraction": "ast" });
+    let item = EvidenceItem {
+        id: new_id(),
+        span_id: span.id.clone(),
+        evidence_type: EvidenceType::Definition,
+        subject_text: Some(af.subject),
+        subject_concept_id: None,
+        predicate: Some("symbol_exists".to_string()),
+        object_text: None,
+        value_json: Some(serde_json::Value::Bool(true)),
+        unit: None,
         confidence: 1.0,
         authority: Authority::Code,
         valid_from: None,

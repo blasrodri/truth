@@ -295,6 +295,18 @@ pub fn evidence_by_predicate(conn: &Connection, predicate: &str) -> Result<Vec<E
     Ok(rows)
 }
 
+/// Whether ANY evidence item has the given predicate. Used to detect, e.g.,
+/// that the repo was indexed with AST (so `symbol_exists` facts exist) and the
+/// AST signal should be trusted exclusively.
+pub fn has_predicate(conn: &Connection, predicate: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM evidence_items WHERE predicate = ?1 LIMIT 1",
+        [predicate],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 /// Evidence whose subject OR predicate matches `key` (case-insensitive),
 /// used by `truth config` to find code/config definitions by key or concept.
 pub fn evidence_matching_key(conn: &Connection, key: &str) -> Result<Vec<EvidenceItem>> {

@@ -12,7 +12,7 @@ use std::path::Path;
 /// evidence (new claim types, sharper relevance gates, AST changes, ...), so an
 /// index built by an older binary is detected as stale and rebuilt. Stored in
 /// SQLite's `PRAGMA user_version`.
-pub const INDEX_FORMAT_VERSION: i64 = 2;
+pub const INDEX_FORMAT_VERSION: i64 = 3;
 
 /// Read the index-format version stamped on this DB (0 if never stamped).
 pub fn index_format_version(conn: &Connection) -> Result<i64> {

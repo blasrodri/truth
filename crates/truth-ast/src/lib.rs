@@ -55,6 +55,7 @@ pub fn extract_rust(source: &str) -> Result<Vec<AstFact>> {
     let mut out = Vec::new();
     extract_routes(&root, bytes, &mut out)?;
     extract_consts(&root, bytes, &mut out)?;
+    extract_functions(&root, bytes, &mut out)?;
     Ok(out)
 }
 
@@ -197,6 +198,44 @@ fn extract_consts(root: &tree_sitter::Node, bytes: &[u8], out: &mut Vec<AstFact>
     Ok(())
 }
 
+/// Functions/methods as `symbol_exists` facts. AST-precise: only real `fn`
+/// definitions match — a function name in a doc comment, string, or macro arg
+/// does not — which a regex "fn NAME" scan cannot guarantee. Also covers
+/// struct/enum/trait/type definitions so symbol claims resolve against actual
+/// declarations.
+fn extract_functions(root: &tree_sitter::Node, bytes: &[u8], out: &mut Vec<AstFact>) -> Result<()> {
+    let q = Query::new(
+        &tree_sitter_rust::language(),
+        r#"
+        (function_item name: (identifier) @name)
+        (struct_item name: (type_identifier) @name)
+        (enum_item name: (type_identifier) @name)
+        (trait_item name: (type_identifier) @name)
+        (type_item name: (type_identifier) @name)
+        "#,
+    )
+    .context("compiling symbol query")?;
+    let ni = q.capture_index_for_name("name").unwrap();
+
+    let mut cursor = QueryCursor::new();
+    for m in cursor.matches(&q, *root, bytes) {
+        let Some(name_n) = m.captures.iter().find(|c| c.index == ni).map(|c| c.node) else {
+            continue;
+        };
+        let name = node_text(name_n, bytes);
+        out.push(AstFact {
+            subject: name.to_string(),
+            predicate: "symbol_exists".into(),
+            value: Value::Bool(true),
+            line: line_of(name_n),
+            text: format!("definition of `{name}`"),
+            route_builder: None,
+            handler: None,
+        });
+    }
+    Ok(())
+}
+
 fn predicate_for(name: &str) -> String {
     let l = name.to_ascii_lowercase();
     if l.contains("retr") {
@@ -287,5 +326,32 @@ mod tests {
         assert!(f.iter().any(|x| x.subject == "DEFAULT_PORT"
             && x.predicate == "port"
             && x.value == Value::Int(8080)));
+    }
+
+    #[test]
+    fn extracts_symbols_but_not_names_in_comments_or_strings() {
+        // AST precision: only real declarations become `symbol_exists`. A name in
+        // a comment or string literal must NOT — which a regex `fn NAME` can't
+        // guarantee.
+        let src = r#"
+            // ghost_fn is only mentioned here in a comment
+            pub fn real_function() {}
+            struct RealStruct;
+            enum RealEnum { A }
+            fn uses_string() { let _ = "also_ghost is in a string"; }
+        "#;
+        let syms: Vec<String> = extract_rust(src)
+            .unwrap()
+            .iter()
+            .filter(|x| x.predicate == "symbol_exists")
+            .map(|x| x.subject.clone())
+            .collect();
+        let has = |n: &str| syms.iter().any(|s| s == n);
+        assert!(has("real_function"));
+        assert!(has("RealStruct"));
+        assert!(has("RealEnum"));
+        assert!(has("uses_string"));
+        assert!(!has("ghost_fn"), "comment name leaked: {syms:?}");
+        assert!(!has("also_ghost"), "string name leaked: {syms:?}");
     }
 }
