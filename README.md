@@ -1,263 +1,161 @@
 # truth
 
-`truth` is a Slack-native engineering claim checker.
+**`truth` is a deterministic fact-checker for the claims an AI coding agent makes about its own work.**
 
-When someone says "nobody uses this endpoint," "the issue is fixed," or "we still
-retry 3 times," `truth` checks the claim against code, docs, config, logs, and
-metrics, then replies with a cited verdict.
+When an agent says *"I added the `/v1/refund` route, set `MAX_RETRIES` to 5, and removed the old checkout handler,"* `truth` checks each claim against the **real code, the working-tree git diff, and logs**, and answers **Supported / Contradicted / Refused** — every verdict cited.
 
-It is not a chatbot. It is a conservative evidence engine for engineering teams.
-
-## Status
-
-This build implements **v0.1 Phases 1–4** plus a hardened deterministic CLI
-(core → LLM → repo indexer → Loki, with explicit observation commands, JSON
-output, an audit-trail explainer, and an evaluation harness). The Slack bot and
-HTTP server are intentionally **not** included; `truth serve` is a placeholder.
-
-The whole pipeline runs **offline**: claim extraction falls back to a
-deterministic regex extractor when no LLM is configured, and a local log file
-adapter substitutes for Loki. No LLM, network, or Slack credentials are required.
-
-## Layout
+It is not a chatbot and it does not decide truth with a model. A language model only parses the agent's sentence into a structured claim; a fixed-rule engine decides the verdict from retrieved evidence. **The agent cannot talk it into a different answer.**
 
 ```
-crates/
-  truth-core/     domain models, enums, config, verdict engine, adapter traits
-  truth-db/       rusqlite migrations + persistence
-  truth-indexer/  repo walker + deterministic evidence extractors
-  truth-logs/     Loki adapter, local-file adapter, PII redaction
-  truth-llm/      regex claim extractor (default) + optional OpenAI-compatible client,
-                  query planner, response generator
-  truth-cli/      the `truth` binary and command implementations
-migrations/       SQLite schema
-examples/         sample-repo and sample-logs for the demo
-fixtures/eval/    evaluation fixtures (the quality harness)
+$ truth verify-turn "I added the /v1/refund endpoint, set MAX_RETRIES to 3, and it runs on port 8080"
+
+  ✓ Supported     I added the /v1/refund endpoint  (src/config.rs)
+  ✗ Contradicted  set MAX_RETRIES to 3             (src/config.rs:1)
+  ✓ Supported     it runs on port 8080            (config.toml:1)
+
+  2 supported · 1 contradicted · 0 refused
+
+  ⚠ The agent's message contradicts the evidence above.
 ```
 
-## Commands
+## Why
 
-```
-init       Initialize truth config and database
-index      Index repo docs/code/config
-doctor     Validate local setup and explain readiness
-inspect    Show what was indexed (routes/constants/env/ports/deps/evidence)
-baseline   Run auto-generated checks from indexed evidence + logs
-check      Check a natural-language engineering claim
-usage      Check observed usage of a route/event/pattern
-errors     Check error occurrences
-latest     Find latest occurrence of a pattern
-config     Search indexed config/code definitions
-explain    Explain a previous check from the audit trail
-eval       Run an evaluation fixture (YAML); --record captures a baseline
-claims     Extract candidate claims from docs/text into a claim file
-report     Run checks from a claim file and produce a report
-ci         Run checks from a claim file and exit per a fail policy
-diff       Compare two reports or recorded outputs
-db         Database commands (migrate)
-serve      Placeholder for future Slack/server mode
-```
+Coding agents over-claim. They report success inferred from clean logs, invent
+terminal output, and confidently describe changes they didn't make. `truth`
+catches the **checkable** subset — wrong config values, routes claimed
+added/removed, things claimed unused — and **refuses** the rest (*"tests pass"*,
+*"this is cleaner"*) instead of guessing. A refusal is honest, not a gap: a
+verifier that bluffs is worse than none.
 
-`check` is natural-language oriented (uses the LLM if configured, else regex).
-`usage` / `errors` / `latest` / `config` are **deterministic** — they take an
-explicit subject and never invoke the LLM. They report observations
-(`Observed` / `Not observed` / `Inconclusive`), not claim verdicts.
+Everything runs **locally**. The store is a single SQLite file in `.truth/`;
+raw logs are never persisted (only redacted aggregates); your code never leaves
+the machine. No LLM, network, or account is required.
 
-`doctor` reports whether `truth` is configured and indexed, including Loki/LLM
-reachability. `inspect` shows exactly what was indexed (so you can trust the
-evidence). `baseline` auto-generates `usage`/`config` checks from the index and
-is purely observational — it never fails because errors were observed.
-
-`--json` is available on `check`, `usage`, `errors`, `latest`, `config`,
-`explain`, `doctor`, `inspect`, and `baseline`, and emits stable machine-readable
-JSON with no extra prose.
-
-## AST extraction (Rust routes)
-
-Rust **route** extraction can use tree-sitter instead of regex:
+## Install
 
 ```bash
-truth index . --extractor regex   # default — current behavior
-truth index . --extractor ast     # AST routes for .rs (regex for everything else)
-truth index . --extractor mixed   # AST routes win; regex fills the rest
+cargo build --release --workspace
+# binaries: target/release/truth  and  target/release/truth-mcp
+# put them on your PATH, e.g.:
+install target/release/truth target/release/truth-mcp /usr/local/bin/
 ```
 
-Or set it in `truth.toml` (the CLI flag overrides it):
+## Use it from your coding agent (MCP)
 
-```toml
-[indexer]
-extractor = "mixed"
-```
+`truth-mcp` is a local [Model Context Protocol](https://modelcontextprotocol.io)
+server (stdio JSON-RPC). It exposes one tool, **`verify_turn`**, that an agent
+calls on **its own** message before telling you a change is done — so the agent
+catches and corrects its own lies first.
 
-AST improves precision for Rust routes by understanding **call structure**: a
-string literal is only a route when it is the argument of a route-builder call
-(`.route(...)`, `.get(...)`, ...), so file paths, derivation paths, and test
-strings inside `assert_eq!` are rejected structurally — no precision heuristics.
-AST route evidence is tagged `extraction_method = ast` and carries the handler
-name when recoverable.
-
-**Scope:** AST currently covers **Rust routes only**. Regex still handles
-constants, env vars, ports, dependencies, and all other languages. Regex remains
-the default for speed and backwards compatibility.
-
-Inspect what came from where:
+### Claude Code
 
 ```bash
-truth inspect routes --source ast      # only AST-extracted routes
-truth inspect routes --source regex    # only regex-extracted
-truth inspect routes --source all      # everything (default)
-truth inspect extraction               # counts by extraction method
+claude mcp add --scope user truth -- /usr/local/bin/truth-mcp
+claude mcp list          # verify it connected
 ```
 
-`--local-log <path>` forces the offline local-file log adapter and always takes
-precedence over Loki, so the demo works regardless of `[loki] enabled`.
+### Cursor, or any MCP client (generic config)
 
-`truth eval <fixture> --record <out.yaml>` captures actual outputs as a recorded
-baseline fixture (refuses to overwrite without `--force`) — useful for building a
-regression corpus from real repos.
+Add to `~/.cursor/mcp.json` (Cursor) or your client's `mcpServers` block:
 
-## Claim files, reports, and CI
-
-A **claim file** is a reviewable YAML list of engineering claims that powers
-`report`, `ci`, and `eval`:
-
-```yaml
-version: 1
-defaults:
-  repo: .
-  local_log: examples/sample-logs/api.log
-  window: 7d
-claims:
-  - id: checkout-unused
-    text: nobody uses /v1/checkout anymore
-    severity: warning          # info | warning | error
-    tags: [usage, checkout]
-    expected_status: contradicted   # optional; used by eval
+```json
+{
+  "mcpServers": {
+    "truth": {
+      "type": "stdio",
+      "command": "/usr/local/bin/truth-mcp"
+    }
+  }
+}
 ```
 
-Generate a starter claim file from your docs (deterministic; LLM optional, never
-required), then **review and edit it by hand**:
+That's the whole config — **no per-repo setup in the MCP file**. The agent
+passes the repo path with each call (the `repo` argument below), so one
+registration works across all your projects.
+
+### The `verify_turn` tool
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `message` | yes | What the agent is about to claim about its work. |
+| `repo` | recommended | Absolute path to the repo root. `truth` opens `<repo>/.truth` and diffs that working tree. Omit it and the server falls back to its own working directory, which may be wrong. |
+| `local_log` | no | Path to a local log file for usage/error claims. |
+
+It returns the verdict table as text plus `structuredContent` (the JSON below),
+including an `index` block reporting whether the index is empty or stale — so a
+"clean" result is never trusted blindly.
+
+> **One-time per repo:** `truth` verifies code-existence/usage/config claims
+> against an **index**. Run `truth init && truth index .` in a repo once (and
+> re-run `truth index .` after large changes) so those claims can be checked.
+> Claims about the **working-tree diff** ("I added/removed X") work with no
+> index. If the index is missing or stale, `verify_turn` says so loudly instead
+> of silently passing.
+
+## Use it yourself (CLI)
 
 ```bash
-truth claims README.md docs/ --out .truth/claims.yaml
+cd your-repo
+truth init                      # writes truth.toml + .truth/, runs migrations
+truth index .                   # index code/docs/config (re-run after big changes)
+
+truth verify-turn "I added /v1/refund, set MAX_RETRIES to 5, removed /v1/checkout"
+truth verify-turn "<agent message>" --repo /path/to/repo --json
 ```
 
-Run the claims and produce a report (text / markdown / json). `report` never
-fails because a claim is contradicted — it is a reporting command (exit 0 unless
-something operational breaks):
+`--repo` opens that repo's `.truth` store and diffs that tree (don't rely on the
+process working directory). `--json` emits stable machine-readable output.
 
-```bash
-truth report .truth/claims.yaml --local-log app.log --format markdown --out truth-report.md
-truth report .truth/claims.yaml --local-log app.log --format json     --out truth-report.json
-```
+## What it can and cannot check
 
-Gate CI on a policy. Exit codes: `0` pass, `1` policy failed, `2` operational
-error. The default only fails on `contradicted` claims with `severity: error`,
-so adoption is painless; tighten it as you go:
+**Checks (state claims):** route added/removed/exists, config value, retry
+count, timeout value, env var present, dependency used, version required, usage
+count, error-still-happening, job-last-success, feature-flag enabled — against
+**code + git diff + logs**, with the diff outranking a possibly-stale index for
+"I just changed X" claims.
 
-```bash
-truth ci .truth/claims.yaml --local-log app.log --fail-on contradicted --fail-severity warning
-```
-
-Track regressions between two runs (report JSON or recorded eval YAML):
-
-```bash
-truth diff old-report.json new-report.json
-truth diff old-report.json new-report.json --json
-```
-
-## Dogfooding loop
-
-```bash
-truth init
-truth index .
-truth inspect
-truth claims README.md docs/ --out .truth/claims.yaml
-# manually review / edit .truth/claims.yaml
-truth report .truth/claims.yaml --local-log path/to/log --format markdown --out truth-report.md
-truth ci .truth/claims.yaml --local-log path/to/log --fail-on contradicted --fail-severity warning
-```
-
-No Slack and no LLM are needed. Claim files are meant to be reviewed and
-committed. Reports are plain markdown/JSON suitable for CI artifacts or (later)
-PR comments.
-
-## Quick start (offline demo)
-
-```bash
-cargo build --workspace
-
-# In a scratch directory:
-truth init                 # writes truth.toml + .truth/, runs migrations
-truth index path/to/examples/sample-repo
-LOG=path/to/examples/sample-logs/api.log
-
-truth check  "nobody uses /v1/checkout anymore" --local-log $LOG   # → Contradicted
-truth check  "we retry payments 3 times"        --local-log $LOG   # → Contradicted
-truth check  "the service runs on port 8080"    --local-log $LOG   # → Supported
-
-truth usage  /v1/checkout                        --local-log $LOG  # → Observed (4 requests)
-truth errors webhook_signature_failed            --local-log $LOG  # → error occurrences
-truth latest /v1/checkout                        --local-log $LOG  # → latest timestamp
-truth config MAX_RETRIES                                            # → repo definition (=5)
-truth eval   fixtures/eval/basic.yaml                               # → quality harness
-```
-
-The local log file may be plain text or JSON-lines; JSON entries are matched on
-structured fields (`route`/`path` for usage, `error`/`message` for errors).
-
-## Real-world first run
-
-On your own repository:
-
-```bash
-truth init
-truth doctor                                  # is truth configured and ready?
-truth index .
-truth inspect                                  # what did truth find?
-truth baseline --local-log path/to/log         # auto-checks from the index
-truth usage /your/route --local-log path/to/log
-truth check "nobody uses /your/route anymore" --local-log path/to/log
-truth eval fixtures/eval/basic.yaml
-```
-
-`doctor` tells you whether setup is ready and what to run next. `inspect` lets
-you confirm `truth` actually found the routes, constants, env vars, and
-dependencies you care about before you trust a verdict. If a `check` comes back
-`Inconclusive`, it explains the likely cause (not indexed / no log source / the
-subject couldn't be resolved) and suggests the next command.
-
-Notes:
-
-- **No Slack and no HTTP server yet** — the core verifier is the product. `truth
-  serve` is an informational placeholder.
-- **No LLM required.** Claim extraction falls back to a deterministic regex
-  extractor; everything runs offline with no network access.
-- **Local logs work offline** via `--local-log`, which always overrides Loki.
-- **Raw logs are never stored.** Only query text, aggregate counts, the latest
-  timestamp, and a few **redacted** samples are persisted.
-- **Samples are redacted** (emails, JWTs, UUIDs, IPs, tokens) before being
-  stored or shown.
+**Refuses (by design):** action claims (*"I ran the tests"* — no evidence
+source for *I ran*), and judgment claims (*"this is cleaner / faster"* — no
+measurable subject). Refused ≠ confirmed.
 
 ## How it works
 
 ```
-claim text
-  → claim extraction (regex by default, LLM optional)
-  → structured claim
+agent message
+  → segment into candidate claims (sentences, clauses)
+  → claim extraction (regex by default; optional LLM, never decides truth)
+  → structured claim  (unverifiable → Refused, never guessed)
   → query plan (safe templates only — the LLM never writes LogQL/SQL)
-  → deterministic source adapters (repo evidence + log queries)
-  → verdict engine (fixed rules + source-authority ordering)
-  → response generator (structured data only; raw logs never surfaced)
+  → evidence: repo index + working-tree git diff + log queries
+  → deterministic verdict engine (fixed rules, source-authority order, diff > stale index)
+  → cited verdict: Supported / Contradicted / Refused
 ```
 
-Every check stores an audit trail (the check, the queries run, the verdict) in
-SQLite. Log samples are redacted (emails, JWTs, UUIDs, IPs, tokens) before being
-stored or shown.
+Every check is stored as an audit trail (the claim, the queries run, the
+verdict) in SQLite. Log samples are redacted (emails, JWTs, UUIDs, IPs, tokens)
+before being stored or shown.
 
-## Configuration
+## Other commands
 
-See `truth.toml.example`. `truth init` copies it to `truth.toml`.
+`truth` is built on a general claim/evidence engine; `verify-turn` is the agent
+front door. The engine is also usable directly:
+
+```
+check     Check a single natural-language engineering claim
+usage     Observed usage of a route/event/pattern (deterministic)
+errors    Error occurrences (deterministic)
+config    Search indexed config/code definitions
+owners    Who has worked on the code behind a subject
+uses      Find code references to a symbol/route/dependency
+docs      Is a subject documented, and consistent with code?
+inspect   Show exactly what was indexed (trust the evidence)
+doctor    Validate local setup and explain readiness
+claims/report/ci/eval/diff   claim files, reports, CI gates, regression diffs
+```
+
+Run `truth <command> --help` for details. `truth serve` (Slack/HTTP) is an
+informational placeholder and intentionally not built — the local verifier is
+the product.
 
 ## Tests
 
@@ -265,12 +163,8 @@ See `truth.toml.example`. `truth init` copies it to `truth.toml`.
 cargo test --workspace
 ```
 
-Covers enum/DB round-trips, migrations, multi-language extractors (Rust / TS /
-Python / Go routes, constants, env vars, deps), JSON-lines + plain-text log
-parsing, LogQL generation, PII redaction, the verdict rules, golden verdict
-fixtures, the deterministic observation commands, JSON output, the eval harness,
-and an end-to-end check over the sample repo + logs.
-
-`truth eval fixtures/eval/basic.yaml` is the product's quality harness: each
-case indexes a repo into a fresh in-memory DB, runs a check, and asserts the
-verdict status. It exits non-zero if any case fails.
+Covers extractors (Rust/TS/Python/Go routes, constants, env vars, deps), the
+git-diff adapter, the verdict rules and golden fixtures, claim segmentation,
+index-freshness warnings, JSON output, and end-to-end checks over the sample
+repo. `truth eval fixtures/eval/agent_claims.yaml` is the agent-fact-checking
+quality harness.
