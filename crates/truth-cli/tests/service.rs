@@ -5,7 +5,11 @@ use truth_cli::service::{self, ObservationStatus};
 use truth_core::config::Config;
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap()
+        .to_path_buf()
 }
 
 fn sample_repo() -> PathBuf {
@@ -13,7 +17,10 @@ fn sample_repo() -> PathBuf {
 }
 
 fn sample_log() -> String {
-    repo_root().join("examples/sample-logs/api.log").to_string_lossy().into_owned()
+    repo_root()
+        .join("examples/sample-logs/api.log")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn setup() -> (rusqlite::Connection, Config) {
@@ -27,7 +34,16 @@ fn setup() -> (rusqlite::Connection, Config) {
 #[test]
 fn usage_observed_when_traffic_present() {
     let (conn, config) = setup();
-    let obs = service::run_usage(&conn, &config, "/v1/checkout", None, None, None, Some(&sample_log())).unwrap();
+    let obs = service::run_usage(
+        &conn,
+        &config,
+        "/v1/checkout",
+        None,
+        None,
+        None,
+        Some(&sample_log()),
+    )
+    .unwrap();
     assert_eq!(obs.status, ObservationStatus::Observed);
     assert_eq!(obs.count, Some(4));
     assert!(obs.evidence.iter().any(|e| e.kind == "route_exists"));
@@ -59,14 +75,24 @@ fn usage_inconclusive_when_no_route_and_no_logs() {
     let (conn, config) = setup();
     let empty = std::env::temp_dir().join("truth_empty_usage2.log");
     std::fs::write(&empty, "").unwrap();
-    let obs = service::run_usage(&conn, &config, "/v9/foo", None, None, None, Some(&empty.to_string_lossy())).unwrap();
+    let obs = service::run_usage(
+        &conn,
+        &config,
+        "/v9/foo",
+        None,
+        None,
+        None,
+        Some(&empty.to_string_lossy()),
+    )
+    .unwrap();
     assert_eq!(obs.status, ObservationStatus::Inconclusive);
 }
 
 #[test]
 fn errors_observed() {
     let (_conn, config) = setup();
-    let obs = service::run_errors(&config, "webhook", None, None, None, Some(&sample_log())).unwrap();
+    let obs =
+        service::run_errors(&config, "webhook", None, None, None, Some(&sample_log())).unwrap();
     assert_eq!(obs.status, ObservationStatus::Observed);
     assert!(obs.count.unwrap() >= 1);
 }
@@ -74,15 +100,34 @@ fn errors_observed() {
 #[test]
 fn errors_not_observed_has_fix_caveat() {
     let (_conn, config) = setup();
-    let obs = service::run_errors(&config, "nonexistent_error_xyz", None, None, None, Some(&sample_log())).unwrap();
+    let obs = service::run_errors(
+        &config,
+        "nonexistent_error_xyz",
+        None,
+        None,
+        None,
+        Some(&sample_log()),
+    )
+    .unwrap();
     assert_eq!(obs.status, ObservationStatus::NotObserved);
-    assert!(obs.caveats.iter().any(|c| c.contains("does not prove the issue is fixed")));
+    assert!(obs
+        .caveats
+        .iter()
+        .any(|c| c.contains("does not prove the issue is fixed")));
 }
 
 #[test]
 fn latest_occurrence_found() {
     let (_conn, config) = setup();
-    let obs = service::run_latest(&config, "/v1/checkout", None, None, None, Some(&sample_log())).unwrap();
+    let obs = service::run_latest(
+        &config,
+        "/v1/checkout",
+        None,
+        None,
+        None,
+        Some(&sample_log()),
+    )
+    .unwrap();
     assert_eq!(obs.status, ObservationStatus::Observed);
     assert!(obs.latest_seen.is_some());
 }

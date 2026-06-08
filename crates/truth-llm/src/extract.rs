@@ -80,8 +80,9 @@ impl ClaimExtractor for RegexExtractor {
             || lower.contains("receives traffic");
         if usage_phrasing {
             if let Some(route) = Self::first_route(text) {
-                let expects_zero =
-                    lower.contains("nobody") || lower.contains("no one") || lower.contains("unused");
+                let expects_zero = lower.contains("nobody")
+                    || lower.contains("no one")
+                    || lower.contains("unused");
                 return claim(
                     ClaimType::UsageCount,
                     Some(route),
@@ -120,7 +121,11 @@ impl ClaimExtractor for RegexExtractor {
                     ClaimType::DependencyUsed,
                     Some(dep),
                     Some("dependency"),
-                    if expects_absent { ClaimOperator::NotExists } else { ClaimOperator::Exists },
+                    if expects_absent {
+                        ClaimOperator::NotExists
+                    } else {
+                        ClaimOperator::Exists
+                    },
                     None,
                     None,
                     None,
@@ -131,7 +136,10 @@ impl ClaimExtractor for RegexExtractor {
 
         // Error fixed: "X errors are fixed", "the bug is fixed"
         if (lower.contains("fixed") || lower.contains("resolved") || lower.contains("no longer"))
-            && (lower.contains("error") || lower.contains("bug") || lower.contains("issue") || lower.contains("webhook"))
+            && (lower.contains("error")
+                || lower.contains("bug")
+                || lower.contains("issue")
+                || lower.contains("webhook"))
         {
             let subject = error_subject(&lower);
             return claim(
@@ -198,10 +206,10 @@ impl ClaimExtractor for RegexExtractor {
         if Self::first_route(text).is_none() {
             // Reject articles / verbs / filler that are never symbol names.
             const NOT_SYMBOL: &[&str] = &[
-                "the", "a", "an", "this", "that", "it", "new", "old", "my", "our",
-                "their", "its", "some", "any", "no", "added", "removed", "deleted",
-                "renamed", "created", "dropped", "wired", "made", "is", "was",
-                "exists", "exist", "ex", "still", "present", "called", "named",
+                "the", "a", "an", "this", "that", "it", "new", "old", "my", "our", "their", "its",
+                "some", "any", "no", "added", "removed", "deleted", "renamed", "created",
+                "dropped", "wired", "made", "is", "was", "exists", "exist", "ex", "still",
+                "present", "called", "named",
             ];
             let ok = |m: regex::Match| {
                 let s = m.as_str().to_string();
@@ -215,7 +223,12 @@ impl ClaimExtractor for RegexExtractor {
                 .captures(text)
                 .and_then(|c| c.get(1))
                 .and_then(ok)
-                .or_else(|| r.symbol_post.captures(text).and_then(|c| c.get(1)).and_then(ok));
+                .or_else(|| {
+                    r.symbol_post
+                        .captures(text)
+                        .and_then(|c| c.get(1))
+                        .and_then(ok)
+                });
             // Guard against vague prose ("refactored the checkout handler to be
             // cleaner"): only treat this as a checkable symbol claim when there's
             // a concrete signal — an action/existence verb, or a backticked name.
@@ -242,7 +255,11 @@ impl ClaimExtractor for RegexExtractor {
                         claim_type: ClaimType::SymbolExists,
                         subject: Some(name),
                         predicate: Some("symbol_exists".into()),
-                        operator: if removed { ClaimOperator::NotExists } else { ClaimOperator::Exists },
+                        operator: if removed {
+                            ClaimOperator::NotExists
+                        } else {
+                            ClaimOperator::Exists
+                        },
                         value: None,
                         unit: None,
                         time_window: Some("recent".into()),
@@ -357,24 +374,56 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
     // Words that are never package names in this position (incl. the cue verbs
     // themselves, so "the project uses serde" doesn't return "uses").
     const STOP: &[&str] = &[
-        "a", "an", "the", "as", "to", "of", "and", "it", "is", "was", "this",
-        "that", "dependency", "dependencies", "crate", "package", "project",
-        "projects", "we", "i", "uses", "use", "using", "used", "added", "adds",
-        "depends", "depend", "library", "lib",
+        "a",
+        "an",
+        "the",
+        "as",
+        "to",
+        "of",
+        "and",
+        "it",
+        "is",
+        "was",
+        "this",
+        "that",
+        "dependency",
+        "dependencies",
+        "crate",
+        "package",
+        "project",
+        "projects",
+        "we",
+        "i",
+        "uses",
+        "use",
+        "using",
+        "used",
+        "added",
+        "adds",
+        "depends",
+        "depend",
+        "library",
+        "lib",
     ];
-    let tokens: Vec<&str> = text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-').filter(|t| !t.is_empty()).collect();
+    let tokens: Vec<&str> = text
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .filter(|t| !t.is_empty())
+        .collect();
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_ascii_lowercase()).collect();
 
     for i in 0..lower_tokens.len() {
         if AFTER.contains(&lower_tokens[i].as_str()) {
             // Scan forward to the next non-stopword token.
-            for j in (i + 1)..lower_tokens.len() {
-                let cand = &lower_tokens[j];
+            for cand in lower_tokens.iter().skip(i + 1) {
                 if STOP.contains(&cand.as_str()) {
                     continue;
                 }
                 // Plausible package: lowercase-ish identifier, not all-caps const.
-                if cand.len() >= 2 && cand.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                if cand.len() >= 2
+                    && cand
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                {
                     return Some(cand.clone());
                 }
                 break;

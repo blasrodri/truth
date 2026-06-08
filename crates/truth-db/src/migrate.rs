@@ -5,11 +5,8 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 /// (version, name, sql). Add new tuples here as migrations are introduced.
-const MIGRATIONS: &[(i64, &str, &str)] = &[(
-    1,
-    "init",
-    include_str!("../../../migrations/0001_init.sql"),
-)];
+const MIGRATIONS: &[(i64, &str, &str)] =
+    &[(1, "init", include_str!("../../../migrations/0001_init.sql"))];
 
 pub fn run(conn: &Connection) -> Result<()> {
     conn.execute_batch(

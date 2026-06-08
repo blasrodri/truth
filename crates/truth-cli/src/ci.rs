@@ -18,7 +18,10 @@ pub struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         // Default: fail on contradicted with severity error.
-        Policy { fail_on: vec!["contradicted".to_string()], fail_severity: Severity::Error }
+        Policy {
+            fail_on: vec!["contradicted".to_string()],
+            fail_severity: Severity::Error,
+        }
     }
 }
 
@@ -40,7 +43,11 @@ pub fn is_failing(result: &ReportResult, policy: &Policy) -> bool {
 
 /// Failing results under a policy.
 pub fn failing<'a>(report: &'a Report, policy: &Policy) -> Vec<&'a ReportResult> {
-    report.results.iter().filter(|r| is_failing(r, policy)).collect()
+    report
+        .results
+        .iter()
+        .filter(|r| is_failing(r, policy))
+        .collect()
 }
 
 /// CLI entry point. Returns the process exit code (0/1/2). It does not call
@@ -86,7 +93,12 @@ fn ci_inner(
 
     let policy = Policy {
         fail_on: fail_on
-            .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+            .map(|s| {
+                s.split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
             .unwrap_or_else(|| Policy::default().fail_on),
         fail_severity: match fail_severity {
             Some(s) => parse_severity(s)?,
@@ -122,7 +134,12 @@ fn print_summary(report: &Report, failures: &[&ReportResult]) {
     } else {
         println!("\nFailing:");
         for f in failures {
-            println!("• {} — {} — severity={}", f.id, title(&f.status), f.severity.as_str());
+            println!(
+                "• {} — {} — severity={}",
+                f.id,
+                title(&f.status),
+                f.severity.as_str()
+            );
         }
         println!("\nCI result: failed");
     }
@@ -133,7 +150,9 @@ fn title(db_status: &str) -> String {
         .split('_')
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
         })
         .collect::<Vec<_>>()
         .join(" ")

@@ -36,11 +36,55 @@ const ALWAYS_SKIP_DIRS: &[&str] = &[
 /// of unknown type) is skipped cheaply by extension before any read.
 const INDEXABLE_EXTS: &[&str] = &[
     // code
-    "rs", "ts", "tsx", "js", "jsx", "py", "go", "rb", "java", "kt", "kts", "scala", "cs", "php",
-    "c", "h", "cc", "cpp", "hpp", "swift", "m", "mm", "ex", "exs", "erl", "clj", "sh", "bash",
+    "rs",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "py",
+    "go",
+    "rb",
+    "java",
+    "kt",
+    "kts",
+    "scala",
+    "cs",
+    "php",
+    "c",
+    "h",
+    "cc",
+    "cpp",
+    "hpp",
+    "swift",
+    "m",
+    "mm",
+    "ex",
+    "exs",
+    "erl",
+    "clj",
+    "sh",
+    "bash",
     // config / data / docs
-    "toml", "yaml", "yml", "json", "json5", "ini", "conf", "cfg", "env", "properties", "xml",
-    "md", "markdown", "rst", "adoc", "txt", "sql", "proto", "graphql", "gradle",
+    "toml",
+    "yaml",
+    "yml",
+    "json",
+    "json5",
+    "ini",
+    "conf",
+    "cfg",
+    "env",
+    "properties",
+    "xml",
+    "md",
+    "markdown",
+    "rst",
+    "adoc",
+    "txt",
+    "sql",
+    "proto",
+    "graphql",
+    "gradle",
 ];
 
 /// Filenames (no/various extension) that are worth indexing.
@@ -224,7 +268,16 @@ mod tests {
         touch(&dir.join("logo.png"));
 
         let files = walk(&dir, &default_cfg());
-        let names: Vec<String> = files.iter().map(|p| p.path.strip_prefix(&dir).unwrap().to_string_lossy().into_owned()).collect();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| {
+                p.path
+                    .strip_prefix(&dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
 
         assert!(names.iter().any(|n| n.ends_with("crates/foo/src/lib.rs")));
         assert!(names.iter().any(|n| n.ends_with("cmd/server/main.go")));
@@ -249,7 +302,16 @@ mod tests {
         cfg.include = vec!["backend".into()]; // non-default → scope
 
         let files = walk(&dir, &cfg);
-        let names: Vec<String> = files.iter().map(|p| p.path.strip_prefix(&dir).unwrap().to_string_lossy().into_owned()).collect();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| {
+                p.path
+                    .strip_prefix(&dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
         assert!(names.iter().any(|n| n.ends_with("backend/app.py")));
         assert!(!names.iter().any(|n| n.ends_with("frontend/app.ts")));
 

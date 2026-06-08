@@ -182,7 +182,10 @@ enum BuildOutcome {
     /// File is new or changed; `replaced` is the prior artifact id to delete.
     /// Boxed to keep the enum small (the `Unchanged` path is the common one in
     /// incremental re-indexing).
-    Built { build: Box<FileBuild>, replaced: Option<String> },
+    Built {
+        build: Box<FileBuild>,
+        replaced: Option<String>,
+    },
 }
 
 /// Decide what to do with one walked file. Fast path: if the file's mtime+size
@@ -213,10 +216,16 @@ fn build_outcome(
             return Some(BuildOutcome::Unchanged { uri });
         }
         let build = Box::new(build_from(&wf.path, &uri, contents, hash, wf, mode));
-        return Some(BuildOutcome::Built { build, replaced: Some(pf.artifact_id.clone()) });
+        return Some(BuildOutcome::Built {
+            build,
+            replaced: Some(pf.artifact_id.clone()),
+        });
     }
     let build = Box::new(build_from(&wf.path, &uri, contents, hash, wf, mode));
-    Some(BuildOutcome::Built { build, replaced: None })
+    Some(BuildOutcome::Built {
+        build,
+        replaced: None,
+    })
 }
 
 /// A fully-built (artifact + spans/evidence) file, ready for serial insertion.
@@ -318,7 +327,11 @@ fn build_from(
 /// `extraction_method=ast` and carrying handler/route_builder metadata. The
 /// human label (path words + handler) goes in `object_text` for concept
 /// resolution, matching the regex enrichment behavior.
-fn ast_route_evidence(artifact_id: &str, uri: &str, af: truth_ast::AstFact) -> (Span, EvidenceItem) {
+fn ast_route_evidence(
+    artifact_id: &str,
+    uri: &str,
+    af: truth_ast::AstFact,
+) -> (Span, EvidenceItem) {
     let span = Span {
         id: new_id(),
         artifact_id: artifact_id.to_string(),

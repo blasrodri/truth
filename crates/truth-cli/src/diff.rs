@@ -26,10 +26,7 @@ pub struct NamedStatus {
 }
 
 /// Compute the diff between two id→status maps.
-pub fn diff_maps(
-    old: &BTreeMap<String, String>,
-    new: &BTreeMap<String, String>,
-) -> DiffReport {
+pub fn diff_maps(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) -> DiffReport {
     let mut changed = Vec::new();
     let mut added = Vec::new();
     let mut removed = Vec::new();
@@ -42,15 +39,25 @@ pub fn diff_maps(
                 to: new_status.clone(),
             }),
             Some(_) => {}
-            None => added.push(NamedStatus { id: id.clone(), status: new_status.clone() }),
+            None => added.push(NamedStatus {
+                id: id.clone(),
+                status: new_status.clone(),
+            }),
         }
     }
     for (id, old_status) in old {
         if !new.contains_key(id) {
-            removed.push(NamedStatus { id: id.clone(), status: old_status.clone() });
+            removed.push(NamedStatus {
+                id: id.clone(),
+                status: old_status.clone(),
+            });
         }
     }
-    DiffReport { changed, added, removed }
+    DiffReport {
+        changed,
+        added,
+        removed,
+    }
 }
 
 /// Parse a report-JSON or recorded-YAML file into an id→status map.
@@ -119,7 +126,9 @@ fn title(db_status: &str) -> String {
         .split('_')
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
         })
         .collect::<Vec<_>>()
         .join(" ")

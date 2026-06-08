@@ -67,8 +67,8 @@ fn golden_usage_contradicted() {
         items: &[],
         query_results: &results,
         usage_threshold: 0,
-            code_references: None,
-            symbol_status: None,
+        code_references: None,
+        symbol_status: None,
     });
     assert_eq!(d.status, VerdictStatus::Contradicted);
 }
@@ -82,8 +82,8 @@ fn golden_retry_mismatch_contradicted() {
         items: &items,
         query_results: &[],
         usage_threshold: 0,
-            code_references: None,
-            symbol_status: None,
+        code_references: None,
+        symbol_status: None,
     });
     assert_eq!(d.status, VerdictStatus::Contradicted);
 }
@@ -97,8 +97,8 @@ fn golden_port_supported() {
         items: &items,
         query_results: &[],
         usage_threshold: 0,
-            code_references: None,
-            symbol_status: None,
+        code_references: None,
+        symbol_status: None,
     });
     assert_eq!(d.status, VerdictStatus::Supported);
 }
@@ -111,8 +111,8 @@ fn golden_no_evidence_inconclusive() {
         items: &[],
         query_results: &[],
         usage_threshold: 0,
-            code_references: None,
-            symbol_status: None,
+        code_references: None,
+        symbol_status: None,
     });
     assert_eq!(d.status, VerdictStatus::Inconclusive);
 }

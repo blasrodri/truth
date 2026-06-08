@@ -158,7 +158,10 @@ fn route_exists_in_repo(input: &VerdictInput) -> bool {
 fn dependency_declared(input: &VerdictInput) -> bool {
     input.items.iter().any(|i| {
         i.predicate.as_deref() == Some("dependency_exists")
-            && i.value_json.as_ref().and_then(|v| v.as_bool()).unwrap_or(false)
+            && i.value_json
+                .as_ref()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
     })
 }
 
@@ -180,7 +183,9 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                     status: VerdictStatus::Supported,
                     confidence: 0.9,
                     evidence_ids: vec!["repo:dependency_exists".into()],
-                    caveats: vec![format!("`{subject}` is declared as a dependency in the manifest.")],
+                    caveats: vec![format!(
+                        "`{subject}` is declared as a dependency in the manifest."
+                    )],
                     suggested_action: None,
                 },
                 (true, true) => VerdictDecision {
@@ -201,7 +206,9 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                     status: VerdictStatus::Contradicted,
                     confidence: 0.75,
                     evidence_ids: vec![],
-                    caveats: vec![format!("`{subject}` is not declared as a dependency in the manifest.")],
+                    caveats: vec![format!(
+                        "`{subject}` is not declared as a dependency in the manifest."
+                    )],
                     suggested_action: None,
                 },
             };
@@ -226,7 +233,11 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
     }
 
     // Claim asserts ~zero usage ("nobody uses ...").
-    let expects_zero = input.claim.expected_number().map(|v| v == 0.0).unwrap_or(true);
+    let expects_zero = input
+        .claim
+        .expected_number()
+        .map(|v| v == 0.0)
+        .unwrap_or(true);
 
     // Code-reference signal: for libraries with no logs, "referenced N times in
     // the code" directly answers "is X used?".
@@ -234,7 +245,8 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
     if code_refs > input.usage_threshold as usize {
         // Referenced in code. Contradicts an "unused"/"nobody uses" claim, and
         // *supports* a positive "X is (still) used" claim.
-        let referenced = format!("`{subject}` is referenced {code_refs} time(s) in the indexed code.");
+        let referenced =
+            format!("`{subject}` is referenced {code_refs} time(s) in the indexed code.");
         if expects_zero {
             return VerdictDecision {
                 status: VerdictStatus::Contradicted,
@@ -259,7 +271,9 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
             status: VerdictStatus::Contradicted,
             confidence: 0.75,
             evidence_ids,
-            caveats: vec![format!("`{subject}` is not referenced in the indexed code.")],
+            caveats: vec![format!(
+                "`{subject}` is not referenced in the indexed code."
+            )],
             suggested_action: None,
         };
     }
@@ -322,10 +336,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
         }
     }
 
-    inconclusive(
-        "Usage evidence was insufficient to decide.",
-        None,
-    )
+    inconclusive("Usage evidence was insufficient to decide.", None)
 }
 
 fn decide_error(input: &VerdictInput) -> VerdictDecision {
@@ -364,7 +375,11 @@ fn decide_error(input: &VerdictInput) -> VerdictDecision {
 }
 
 fn decide_latest(input: &VerdictInput) -> VerdictDecision {
-    let latest = input.query_results.iter().filter_map(|r| r.latest_seen).max();
+    let latest = input
+        .query_results
+        .iter()
+        .filter_map(|r| r.latest_seen)
+        .max();
     let evidence_ids = log_evidence_labels(input);
     match latest {
         Some(_) => VerdictDecision {
@@ -382,11 +397,14 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
     use crate::claim::ClaimOperator;
     let exists = route_exists_in_repo(input)
         || input.items.iter().any(|i| {
-            matches!(i.predicate.as_deref(), Some("env_var_exists") | Some("exists"))
-                && i.value_json
-                    .as_ref()
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
+            matches!(
+                i.predicate.as_deref(),
+                Some("env_var_exists") | Some("exists")
+            ) && i
+                .value_json
+                .as_ref()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
         });
 
     // The claim's polarity decides what "match" means. A positive existence
@@ -453,7 +471,10 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
 fn diff_says_added(input: &VerdictInput) -> bool {
     input.items.iter().any(|i| {
         i.predicate.as_deref() == Some("route_exists")
-            && i.metadata_json.get("from_diff").and_then(|v| v.as_bool()).unwrap_or(false)
+            && i.metadata_json
+                .get("from_diff")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
             && i.value_json.as_ref().and_then(|v| v.as_bool()) == Some(true)
     })
 }
@@ -509,7 +530,9 @@ fn decide_symbol(input: &VerdictInput) -> VerdictDecision {
             status: VerdictStatus::Contradicted,
             confidence: 0.8,
             evidence_ids: vec![],
-            caveats: vec![format!("`{subject}` is not present in the working tree or index.")],
+            caveats: vec![format!(
+                "`{subject}` is not present in the working tree or index."
+            )],
             suggested_action: Some("Claimed present, but it could not be found.".to_string()),
         },
     }
@@ -571,9 +594,7 @@ fn decide_value(input: &VerdictInput) -> VerdictDecision {
                     status: VerdictStatus::Contradicted,
                     confidence: 0.92,
                     evidence_ids: vec![label],
-                    caveats: vec![format!(
-                        "Claim says {exp} but the source defines {def}."
-                    )],
+                    caveats: vec![format!("Claim says {exp} but the source defines {def}.")],
                     suggested_action: Some("Update the claim or the source to match.".to_string()),
                 }
             }

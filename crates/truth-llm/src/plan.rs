@@ -143,7 +143,10 @@ mod tests {
             .queries
             .iter()
             .any(|q| q.query_type == QueryType::RouteCount && q.source == SourceKind::LocalLogs));
-        assert!(plan.queries.iter().any(|q| q.query_type == QueryType::RouteExists));
+        assert!(plan
+            .queries
+            .iter()
+            .any(|q| q.query_type == QueryType::RouteExists));
     }
 
     #[test]

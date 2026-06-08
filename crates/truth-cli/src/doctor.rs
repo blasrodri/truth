@@ -32,7 +32,11 @@ pub struct DoctorReport {
 }
 
 fn chk(name: &str, status: CheckStatus, message: impl Into<String>) -> DoctorCheck {
-    DoctorCheck { name: name.into(), status, message: message.into() }
+    DoctorCheck {
+        name: name.into(),
+        status,
+        message: message.into(),
+    }
 }
 
 /// Run all diagnostics and build a report (no I/O side effects beyond reads and
@@ -58,7 +62,11 @@ pub fn run(config: &Config, config_exists: bool) -> DoctorReport {
     let mut indexed_ok = false;
     match conn {
         Ok(conn) => {
-            checks.push(chk("database", CheckStatus::Ok, format!("open at {}", config.database.path)));
+            checks.push(chk(
+                "database",
+                CheckStatus::Ok,
+                format!("open at {}", config.database.path),
+            ));
             checks.push(chk("migrations", CheckStatus::Ok, "applied"));
 
             match truth_db::repo::index_counts(&conn) {
@@ -74,17 +82,33 @@ pub fn run(config: &Config, config_exists: bool) -> DoctorReport {
                     ));
                 }
                 Ok(_) => {
-                    checks.push(chk("indexed_evidence", CheckStatus::Warn, "no indexed evidence yet"));
+                    checks.push(chk(
+                        "indexed_evidence",
+                        CheckStatus::Warn,
+                        "no indexed evidence yet",
+                    ));
                     suggested.push("truth index .".to_string());
                 }
                 Err(e) => {
-                    checks.push(chk("indexed_evidence", CheckStatus::Error, format!("count failed: {e}")));
+                    checks.push(chk(
+                        "indexed_evidence",
+                        CheckStatus::Error,
+                        format!("count failed: {e}"),
+                    ));
                 }
             }
         }
         Err(e) => {
-            checks.push(chk("database", CheckStatus::Error, format!("cannot open {}: {e}", config.database.path)));
-            checks.push(chk("migrations", CheckStatus::Error, "skipped (no database)"));
+            checks.push(chk(
+                "database",
+                CheckStatus::Error,
+                format!("cannot open {}: {e}", config.database.path),
+            ));
+            checks.push(chk(
+                "migrations",
+                CheckStatus::Error,
+                "skipped (no database)",
+            ));
             suggested.push("truth init".to_string());
         }
     }
@@ -93,13 +117,25 @@ pub fn run(config: &Config, config_exists: bool) -> DoctorReport {
     if Path::new(&config.repo.root).exists() {
         checks.push(chk("repo_root", CheckStatus::Ok, config.repo.root.clone()));
     } else {
-        checks.push(chk("repo_root", CheckStatus::Warn, format!("repo root `{}` not found", config.repo.root)));
+        checks.push(chk(
+            "repo_root",
+            CheckStatus::Warn,
+            format!("repo root `{}` not found", config.repo.root),
+        ));
     }
 
     // Indexer extractor mode.
     let mode = config.indexer.extractor;
-    let ast_note = if mode.uses_ast() { "AST Rust routes: enabled" } else { "AST Rust routes: disabled" };
-    checks.push(chk("extractor", CheckStatus::Info, format!("{} ({ast_note})", mode.as_str())));
+    let ast_note = if mode.uses_ast() {
+        "AST Rust routes: enabled"
+    } else {
+        "AST Rust routes: disabled"
+    };
+    checks.push(chk(
+        "extractor",
+        CheckStatus::Info,
+        format!("{} ({ast_note})", mode.as_str()),
+    ));
 
     // Loki.
     checks.push(loki_check(config));
@@ -110,8 +146,16 @@ pub fn run(config: &Config, config_exists: bool) -> DoctorReport {
     // Security.
     checks.push(chk(
         "redaction",
-        if config.security.redact_pii { CheckStatus::Ok } else { CheckStatus::Warn },
-        if config.security.redact_pii { "enabled" } else { "disabled" },
+        if config.security.redact_pii {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Warn
+        },
+        if config.security.redact_pii {
+            "enabled"
+        } else {
+            "disabled"
+        },
     ));
     checks.push(chk(
         "max_log_window",
@@ -123,9 +167,8 @@ pub fn run(config: &Config, config_exists: bool) -> DoctorReport {
     let sample_repo = Path::new("examples/sample-repo");
     let sample_log = Path::new("examples/sample-logs/api.log");
     if sample_repo.exists() && sample_log.exists() {
-        suggested.push(
-            "truth usage /v1/checkout --local-log examples/sample-logs/api.log".to_string(),
-        );
+        suggested
+            .push("truth usage /v1/checkout --local-log examples/sample-logs/api.log".to_string());
         suggested.push(
             "truth check \"nobody uses /v1/checkout anymore\" --local-log examples/sample-logs/api.log"
                 .to_string(),
@@ -150,21 +193,44 @@ fn loki_check(config: &Config) -> DoctorCheck {
     }
     let url = format!("{}/ready", config.loki.base_url.trim_end_matches('/'));
     if probe(&url) {
-        chk("loki", CheckStatus::Ok, format!("enabled and reachable at {}", config.loki.base_url))
+        chk(
+            "loki",
+            CheckStatus::Ok,
+            format!("enabled and reachable at {}", config.loki.base_url),
+        )
     } else {
-        chk("loki", CheckStatus::Warn, format!("enabled but unreachable at {}", config.loki.base_url))
+        chk(
+            "loki",
+            CheckStatus::Warn,
+            format!("enabled but unreachable at {}", config.loki.base_url),
+        )
     }
 }
 
 fn llm_check(config: &Config) -> DoctorCheck {
     if !config.llm.enabled {
-        return chk("llm", CheckStatus::Info, "disabled; deterministic regex extractor active");
+        return chk(
+            "llm",
+            CheckStatus::Info,
+            "disabled; deterministic regex extractor active",
+        );
     }
     let url = format!("{}/models", config.llm.base_url.trim_end_matches('/'));
     if probe(&url) {
-        chk("llm", CheckStatus::Ok, format!("configured and reachable at {}", config.llm.base_url))
+        chk(
+            "llm",
+            CheckStatus::Ok,
+            format!("configured and reachable at {}", config.llm.base_url),
+        )
     } else {
-        chk("llm", CheckStatus::Warn, format!("configured but unreachable at {}; will fall back to regex", config.llm.base_url))
+        chk(
+            "llm",
+            CheckStatus::Warn,
+            format!(
+                "configured but unreachable at {}; will fall back to regex",
+                config.llm.base_url
+            ),
+        )
     }
 }
 
@@ -225,7 +291,9 @@ fn pretty(name: &str) -> String {
         .split('_')
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
         })
         .collect();
     words.join(" ")

@@ -81,10 +81,16 @@ pub struct TurnReport {
 
 impl TurnReport {
     pub fn supported(&self) -> usize {
-        self.verdicts.iter().filter(|v| v.status == VerdictStatus::Supported).count()
+        self.verdicts
+            .iter()
+            .filter(|v| v.status == VerdictStatus::Supported)
+            .count()
     }
     pub fn contradicted(&self) -> usize {
-        self.verdicts.iter().filter(|v| v.status == VerdictStatus::Contradicted).count()
+        self.verdicts
+            .iter()
+            .filter(|v| v.status == VerdictStatus::Contradicted)
+            .count()
     }
     /// Refused = anything we couldn't turn into a checkable verdict.
     pub fn refused(&self) -> usize {
@@ -206,9 +212,9 @@ fn is_plausible_claim(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
     let has_path = s.contains('/');
     let has_number = s.chars().any(|c| c.is_ascii_digit());
-    let has_const = s.split_whitespace().any(|w| {
-        w.len() >= 3 && w.chars().all(|c| c.is_ascii_uppercase() || c == '_')
-    });
+    let has_const = s
+        .split_whitespace()
+        .any(|w| w.len() >= 3 && w.chars().all(|c| c.is_ascii_uppercase() || c == '_'));
     let has_verb = ["added", "removed", "deleted", "dropped", "created", "wired"]
         .iter()
         .any(|v| lower.contains(v));
@@ -225,7 +231,9 @@ pub fn verify(
     // Capture index freshness FIRST so the report can flag a stale/empty store
     // — a verifier that silently checks against no data must not look "clean".
     let status = truth_db::repo::index_status(conn)?;
-    let age_secs = status.last_indexed_at.map(|t| (truth_core::now_secs() - t).max(0));
+    let age_secs = status
+        .last_indexed_at
+        .map(|t| (truth_core::now_secs() - t).max(0));
     let freshness = Freshness {
         repo: config.repo.root.clone(),
         artifacts: status.artifacts,
@@ -245,7 +253,11 @@ pub fn verify(
             citation,
         });
     }
-    Ok(TurnReport { message: message.to_string(), verdicts, freshness })
+    Ok(TurnReport {
+        message: message.to_string(),
+        verdicts,
+        freshness,
+    })
 }
 
 fn first_citation(evidence: &[EvidenceJson]) -> Option<String> {
@@ -297,7 +309,9 @@ pub fn render_text(report: &TurnReport) -> String {
 /// The DB lives at `<repo>/.truth/truth.sqlite`.
 pub fn retarget_repo(config: &mut Config, repo: &str) {
     config.repo.root = repo.to_string();
-    let db = std::path::Path::new(repo).join(".truth").join("truth.sqlite");
+    let db = std::path::Path::new(repo)
+        .join(".truth")
+        .join("truth.sqlite");
     config.database.path = db.to_string_lossy().into_owned();
 }
 
@@ -344,15 +358,30 @@ mod tests {
 
     #[test]
     fn empty_index_warns_and_stale_index_warns() {
-        let empty = Freshness { repo: ".".into(), artifacts: 0, last_indexed_at: Some(100), age_secs: Some(10) };
+        let empty = Freshness {
+            repo: ".".into(),
+            artifacts: 0,
+            last_indexed_at: Some(100),
+            age_secs: Some(10),
+        };
         assert!(empty.is_empty());
         assert!(empty.warning().unwrap().contains("EMPTY"));
 
-        let stale = Freshness { repo: ".".into(), artifacts: 5, last_indexed_at: Some(0), age_secs: Some(3 * 86_400) };
+        let stale = Freshness {
+            repo: ".".into(),
+            artifacts: 5,
+            last_indexed_at: Some(0),
+            age_secs: Some(3 * 86_400),
+        };
         assert!(stale.is_stale());
         assert!(stale.warning().unwrap().contains("old"));
 
-        let fresh = Freshness { repo: ".".into(), artifacts: 5, last_indexed_at: Some(0), age_secs: Some(60) };
+        let fresh = Freshness {
+            repo: ".".into(),
+            artifacts: 5,
+            last_indexed_at: Some(0),
+            age_secs: Some(60),
+        };
         assert!(fresh.warning().is_none());
     }
 
@@ -361,8 +390,12 @@ mod tests {
         let mut cfg = Config::default();
         retarget_repo(&mut cfg, "/work/proj");
         assert_eq!(cfg.repo.root, "/work/proj");
-        assert!(cfg.database.path.ends_with("/work/proj/.truth/truth.sqlite")
-            || cfg.database.path.contains("/work/proj/.truth"));
+        assert!(
+            cfg.database
+                .path
+                .ends_with("/work/proj/.truth/truth.sqlite")
+                || cfg.database.path.contains("/work/proj/.truth")
+        );
     }
 
     #[test]

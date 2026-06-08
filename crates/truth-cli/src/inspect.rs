@@ -27,7 +27,13 @@ impl Category {
             Some("dependency_exists") => Category::Dependency,
             Some("port") => Category::Port,
             // retry_count / timeout / generic numeric constants.
-            Some(_) if item.value_json.as_ref().map(|v| v.is_number()).unwrap_or(false) => {
+            Some(_)
+                if item
+                    .value_json
+                    .as_ref()
+                    .map(|v| v.is_number())
+                    .unwrap_or(false) =>
+            {
                 Category::Constant
             }
             _ => Category::Other,
@@ -62,8 +68,16 @@ pub struct InspectItem {
 /// Build the citation `uri:line` for an evidence item.
 pub fn citation(item: &EvidenceItem) -> Option<String> {
     let uri = item.metadata_json.get("uri").and_then(|v| v.as_str())?;
-    let line = item.metadata_json.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-    Some(if line > 0 { format!("{uri}:{line}") } else { uri.to_string() })
+    let line = item
+        .metadata_json
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    Some(if line > 0 {
+        format!("{uri}:{line}")
+    } else {
+        uri.to_string()
+    })
 }
 
 /// Load all indexed items, flattened and categorized.
@@ -231,7 +245,9 @@ fn emit_category(cat: Category, items: &[&InspectItem], json: bool) {
     let title = {
         let p = cat.plural();
         let mut c = p.chars();
-        c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        c.next()
+            .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+            .unwrap_or_default()
     };
     println!("{title}\n");
     if items.is_empty() {
@@ -257,9 +273,23 @@ fn emit_items(items: &[InspectItem], json: bool) {
     }
     println!("Indexed evidence\n");
     for it in items {
-        let val = it.value.as_ref().map(|v| format!(" = {}", scalar(v))).unwrap_or_default();
-        let cite = it.citation.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
-        println!("• [{}] {}{}{}", category_label(it.category), it.subject, val, cite);
+        let val = it
+            .value
+            .as_ref()
+            .map(|v| format!(" = {}", scalar(v)))
+            .unwrap_or_default();
+        let cite = it
+            .citation
+            .as_deref()
+            .map(|c| format!(" ({c})"))
+            .unwrap_or_default();
+        println!(
+            "• [{}] {}{}{}",
+            category_label(it.category),
+            it.subject,
+            val,
+            cite
+        );
     }
 }
 

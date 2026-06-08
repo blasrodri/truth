@@ -5,10 +5,17 @@ use truth_cli::refs::{build_report, scan_references};
 #[test]
 fn word_boundary_scan_excludes_substrings_and_def_site() {
     // `port` must not match `support`. Lines: 1=support, 2=def, 3=use.
-    let f = tmp("scan", "let support = 1;\nlet port = 8080;\nuse_of(port);\n");
-    let (count, samples, scanned) = scan_references(std::slice::from_ref(&f), "port", None, None, 5);
+    let f = tmp(
+        "scan",
+        "let support = 1;\nlet port = 8080;\nuse_of(port);\n",
+    );
+    let (count, samples, scanned) =
+        scan_references(std::slice::from_ref(&f), "port", None, None, 5);
     assert_eq!(scanned, 1);
-    assert_eq!(count, 2, "def + use, support excluded; samples: {samples:?}");
+    assert_eq!(
+        count, 2,
+        "def + use, support excluded; samples: {samples:?}"
+    );
 
     // Excluding the definition site (line 2) leaves just the real use.
     let (count_excl, _, _) = scan_references(&[f], "port", Some(&tmp_path("scan")), Some(2), 5);
@@ -50,7 +57,10 @@ fn detects_dead_code_and_unused_dependency() {
 
     // serde: in Cargo.toml but never imported — unused dependency.
     let serde = build_report(&conn, "serde").unwrap();
-    assert_eq!(serde.status, "definition_only", "unused dep should be definition_only: {serde:?}");
+    assert_eq!(
+        serde.status, "definition_only",
+        "unused dep should be definition_only: {serde:?}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

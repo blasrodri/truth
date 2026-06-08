@@ -71,7 +71,10 @@ pub fn index(path: &str, stats_flag: bool, full: bool, extractor: Option<&str>) 
     )?;
     println!(
         "Indexed {} files → {} artifacts, {} evidence items (extractor: {}).",
-        stats.files, stats.artifacts, stats.evidence_items, mode.as_str()
+        stats.files,
+        stats.artifacts,
+        stats.evidence_items,
+        mode.as_str()
     );
     if stats_flag {
         println!();
@@ -79,7 +82,10 @@ pub fn index(path: &str, stats_flag: bool, full: bool, extractor: Option<&str>) 
         println!("Files read:      {}", stats.files_read);
         println!("Evidence items:  {}", stats.evidence_items);
         println!("Evidence/file:   {:.2}", stats.evidence_per_file());
-        println!("Elapsed:         {:.1} ms", stats.elapsed.as_secs_f64() * 1000.0);
+        println!(
+            "Elapsed:         {:.1} ms",
+            stats.elapsed.as_secs_f64() * 1000.0
+        );
         println!("Throughput:      {:.0} files/sec", stats.files_per_sec());
     }
     Ok(())
@@ -168,13 +174,20 @@ fn emit_observation(obs: &service::Observation, json: bool) {
 }
 
 fn print_json(v: &serde_json::Value) {
-    println!("{}", serde_json::to_string_pretty(v).expect("json serializes"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(v).expect("json serializes")
+    );
 }
 
 /// Open the database, failing with a friendly hint if it is missing.
 pub(crate) fn open_db(config: &Config) -> Result<Connection> {
-    truth_db::open(&config.database.path)
-        .with_context(|| format!("opening database at {} (run `truth init` first?)", config.database.path))
+    truth_db::open(&config.database.path).with_context(|| {
+        format!(
+            "opening database at {} (run `truth init` first?)",
+            config.database.path
+        )
+    })
 }
 
 /// Load `truth.toml`, falling back to defaults if absent.

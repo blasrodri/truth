@@ -11,13 +11,20 @@ use truth_core::config::Config;
 use truth_core::report::{ClaimFile, Severity};
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap()
+        .to_path_buf()
 }
 fn sample_repo() -> PathBuf {
     repo_root().join("examples/sample-repo")
 }
 fn sample_log() -> String {
-    repo_root().join("examples/sample-logs/api.log").to_string_lossy().into_owned()
+    repo_root()
+        .join("examples/sample-logs/api.log")
+        .to_string_lossy()
+        .into_owned()
 }
 fn offline() -> Config {
     let mut c = Config::from_toml_str("").unwrap();
@@ -26,7 +33,13 @@ fn offline() -> Config {
 }
 
 fn claim_file_for(extra_status: bool) -> ClaimFile {
-    let status = |s: &str| if extra_status { format!("    expected_status: {s}\n") } else { String::new() };
+    let status = |s: &str| {
+        if extra_status {
+            format!("    expected_status: {s}\n")
+        } else {
+            String::new()
+        }
+    };
     let yaml = format!(
         "version: 1\ndefaults:\n  repo: {repo}\n  local_log: {log}\nclaims:\n  - id: checkout-unused\n    text: nobody uses /v1/checkout anymore\n    severity: warning\n{s1}  - id: service-port\n    text: the service runs on port 8080\n    severity: info\n{s2}",
         repo = sample_repo().display(),
@@ -69,12 +82,24 @@ fn eval_reads_new_claims_format_and_skips_unstated() {
 
 #[test]
 fn claims_extracts_port_retry_usage_and_ignores_vague() {
-    let readme = sample_repo().join("README.md").to_string_lossy().into_owned();
+    let readme = sample_repo()
+        .join("README.md")
+        .to_string_lossy()
+        .into_owned();
     let specs = extract_claims(&[readme], &offline()).unwrap();
     let joined: Vec<&str> = specs.iter().map(|s| s.text.as_str()).collect();
-    assert!(joined.iter().any(|t| t.contains("8080")), "port claim: {joined:?}");
-    assert!(joined.iter().any(|t| t.to_lowercase().contains("retry")), "retry claim: {joined:?}");
-    assert!(joined.iter().any(|t| t.contains("/v1/checkout")), "usage claim: {joined:?}");
+    assert!(
+        joined.iter().any(|t| t.contains("8080")),
+        "port claim: {joined:?}"
+    );
+    assert!(
+        joined.iter().any(|t| t.to_lowercase().contains("retry")),
+        "retry claim: {joined:?}"
+    );
+    assert!(
+        joined.iter().any(|t| t.contains("/v1/checkout")),
+        "usage claim: {joined:?}"
+    );
     // Vague prose must not be extracted.
     assert!(!joined.iter().any(|t| t.contains("architecture is simple")));
     // Every spec carries source + extraction metadata.
@@ -86,9 +111,17 @@ fn claims_extracts_port_retry_usage_and_ignores_vague() {
 
 #[test]
 fn claims_yaml_reparses() {
-    let readme = sample_repo().join("README.md").to_string_lossy().into_owned();
+    let readme = sample_repo()
+        .join("README.md")
+        .to_string_lossy()
+        .into_owned();
     let specs = extract_claims(&[readme], &offline()).unwrap();
-    let cf = ClaimFile { version: 1, metadata: Default::default(), defaults: Default::default(), claims: specs };
+    let cf = ClaimFile {
+        version: 1,
+        metadata: Default::default(),
+        defaults: Default::default(),
+        claims: specs,
+    };
     let yaml = cf.to_yaml().unwrap();
     let reparsed = ClaimFile::from_yaml(&yaml).unwrap();
     assert_eq!(reparsed.claims.len(), cf.claims.len());
@@ -104,7 +137,11 @@ fn report_runs_and_does_not_fail_on_contradicted() {
     assert_eq!(report.summary.contradicted, 1);
     assert_eq!(report.summary.supported, 1);
     // Results carry evidence + caveats.
-    let checkout = report.results.iter().find(|r| r.id == "checkout-unused").unwrap();
+    let checkout = report
+        .results
+        .iter()
+        .find(|r| r.id == "checkout-unused")
+        .unwrap();
     assert_eq!(checkout.status, "contradicted");
     assert!(!checkout.evidence.is_empty());
     assert!(!checkout.caveats.is_empty());
@@ -143,7 +180,10 @@ fn ci_passes_when_no_failing_severity() {
 fn ci_fails_on_contradicted_warning_with_warning_severity() {
     let cf = claim_file_for(false);
     let report = run_report(&offline(), &cf, "t").unwrap();
-    let policy = Policy { fail_on: vec!["contradicted".into()], fail_severity: Severity::Warning };
+    let policy = Policy {
+        fail_on: vec!["contradicted".into()],
+        fail_severity: Severity::Warning,
+    };
     let fails = failing(&report, &policy);
     assert_eq!(fails.len(), 1);
     assert_eq!(fails[0].id, "checkout-unused");
@@ -165,10 +205,16 @@ fn ci_is_failing_respects_status_and_severity() {
         caveats: vec![],
     };
     // Info severity below the warning threshold → not failing.
-    let policy = Policy { fail_on: vec!["contradicted".into()], fail_severity: Severity::Warning };
+    let policy = Policy {
+        fail_on: vec!["contradicted".into()],
+        fail_severity: Severity::Warning,
+    };
     assert!(!is_failing(&r, &policy));
     // Lower the threshold to info → now failing.
-    let policy = Policy { fail_on: vec!["contradicted".into()], fail_severity: Severity::Info };
+    let policy = Policy {
+        fail_on: vec!["contradicted".into()],
+        fail_severity: Severity::Info,
+    };
     assert!(is_failing(&r, &policy));
 }
 

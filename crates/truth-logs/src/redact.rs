@@ -19,10 +19,8 @@ fn patterns() -> &'static Patterns {
         email: Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").unwrap(),
         // header.payload.signature — three base64url segments.
         jwt: Regex::new(r"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+").unwrap(),
-        uuid: Regex::new(
-            r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
-        )
-        .unwrap(),
+        uuid: Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+            .unwrap(),
         ip: Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap(),
         // Long opaque tokens / API keys (>=24 word chars), e.g. sk_live_...
         token: Regex::new(r"\b[A-Za-z0-9_\-]{24,}\b").unwrap(),

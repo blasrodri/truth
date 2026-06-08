@@ -5,7 +5,11 @@ use truth_cli::eval::{run_eval, Fixture};
 use truth_core::config::Config;
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap()
+        .to_path_buf()
 }
 
 fn offline_config() -> Config {
@@ -77,5 +81,9 @@ fn shipped_basic_fixture_is_green() {
         }
     }
     let report = run_eval(&offline_config(), &f).unwrap();
-    assert_eq!(report.failed, 0, "shipped fixture should be green: {:?}", report.cases);
+    assert_eq!(
+        report.failed, 0,
+        "shipped fixture should be green: {:?}",
+        report.cases
+    );
 }

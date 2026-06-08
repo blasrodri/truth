@@ -78,7 +78,10 @@ pub struct ServerConfig {
 }
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self { host: "0.0.0.0".into(), port: 8080 }
+        Self {
+            host: "0.0.0.0".into(),
+            port: 8080,
+        }
     }
 }
 
@@ -88,7 +91,9 @@ pub struct DatabaseConfig {
 }
 impl Default for DatabaseConfig {
     fn default() -> Self {
-        Self { path: ".truth/truth.sqlite".into() }
+        Self {
+            path: ".truth/truth.sqlite".into(),
+        }
     }
 }
 
@@ -195,7 +200,9 @@ pub struct VerdictConfig {
 }
 impl Default for VerdictConfig {
     fn default() -> Self {
-        Self { default_confidence_threshold: 0.75 }
+        Self {
+            default_confidence_threshold: 0.75,
+        }
     }
 }
 

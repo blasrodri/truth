@@ -38,8 +38,8 @@ pub enum Value {
 
 /// Route-registration method names whose string-literal arg is a route.
 const ROUTE_METHODS: &[&str] = &[
-    "get", "post", "put", "patch", "delete", "head", "options", "route", "at",
-    "mount", "nest", "service", "handle", "resource",
+    "get", "post", "put", "patch", "delete", "head", "options", "route", "at", "mount", "nest",
+    "service", "handle", "resource",
 ];
 
 /// Extract route + constant facts from Rust source via tree-sitter.
@@ -75,9 +75,13 @@ fn handler_ident(node: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
         "call_expression" => {
             // get(checkout) -> the first identifier in the arguments.
             let args = node.child_by_field_name("arguments")?;
-            named_children(args).into_iter().find_map(|c| handler_ident(c, bytes))
+            named_children(args)
+                .into_iter()
+                .find_map(|c| handler_ident(c, bytes))
         }
-        _ => named_children(node).into_iter().find_map(|c| handler_ident(c, bytes)),
+        _ => named_children(node)
+            .into_iter()
+            .find_map(|c| handler_ident(c, bytes)),
     }
 }
 
@@ -110,7 +114,9 @@ fn extract_routes(root: &tree_sitter::Node, bytes: &[u8], out: &mut Vec<AstFact>
     for m in cursor.matches(&q, *root, bytes) {
         let method = m.captures.iter().find(|c| c.index == mi).map(|c| c.node);
         let args = m.captures.iter().find(|c| c.index == ai).map(|c| c.node);
-        let (Some(method), Some(args)) = (method, args) else { continue };
+        let (Some(method), Some(args)) = (method, args) else {
+            continue;
+        };
 
         let method_name = node_text(method, bytes);
         if !ROUTE_METHODS.contains(&method_name) {
@@ -120,7 +126,9 @@ fn extract_routes(root: &tree_sitter::Node, bytes: &[u8], out: &mut Vec<AstFact>
         // First argument must be a string literal that is a route path.
         let mut walker = args.walk();
         let arg_nodes: Vec<_> = args.named_children(&mut walker).collect();
-        let Some(first) = arg_nodes.first() else { continue };
+        let Some(first) = arg_nodes.first() else {
+            continue;
+        };
         if first.kind() != "string_literal" {
             continue;
         }
@@ -165,11 +173,15 @@ fn extract_consts(root: &tree_sitter::Node, bytes: &[u8], out: &mut Vec<AstFact>
     for m in cursor.matches(&q, *root, bytes) {
         let name_n = m.captures.iter().find(|c| c.index == ni).map(|c| c.node);
         let val_n = m.captures.iter().find(|c| c.index == vi).map(|c| c.node);
-        let (Some(name_n), Some(val_n)) = (name_n, val_n) else { continue };
+        let (Some(name_n), Some(val_n)) = (name_n, val_n) else {
+            continue;
+        };
 
         let name = node_text(name_n, bytes);
         let raw = node_text(val_n, bytes).replace('_', "");
-        let Some(value) = parse_int_lit(&raw) else { continue };
+        let Some(value) = parse_int_lit(&raw) else {
+            continue;
+        };
 
         let predicate = predicate_for(name);
         out.push(AstFact {
@@ -211,7 +223,11 @@ mod tests {
     use super::*;
 
     fn routes(facts: &[AstFact]) -> Vec<&str> {
-        facts.iter().filter(|f| f.predicate == "route_exists").map(|f| f.subject.as_str()).collect()
+        facts
+            .iter()
+            .filter(|f| f.predicate == "route_exists")
+            .map(|f| f.subject.as_str())
+            .collect()
     }
 
     #[test]
@@ -222,7 +238,9 @@ mod tests {
         "#;
         let f = extract_rust(src).unwrap();
         assert!(routes(&f).contains(&"/v1/checkout"));
-        assert!(f.iter().any(|x| x.subject == "MAX_RETRIES" && x.predicate == "retry_count" && x.value == Value::Int(5)));
+        assert!(f.iter().any(|x| x.subject == "MAX_RETRIES"
+            && x.predicate == "retry_count"
+            && x.value == Value::Int(5)));
     }
 
     #[test]
@@ -252,14 +270,22 @@ mod tests {
             }
         "#;
         let f = extract_rust(src).unwrap();
-        assert!(routes(&f).is_empty(), "should extract no routes, got: {:?}", routes(&f));
+        assert!(
+            routes(&f).is_empty(),
+            "should extract no routes, got: {:?}",
+            routes(&f)
+        );
     }
 
     #[test]
     fn typed_and_hex_constants() {
         let src = "const BUF_MASK: u32 = 0xFF;\nstatic DEFAULT_PORT: u16 = 8080;\n";
         let f = extract_rust(src).unwrap();
-        assert!(f.iter().any(|x| x.subject == "BUF_MASK" && x.value == Value::Int(255)));
-        assert!(f.iter().any(|x| x.subject == "DEFAULT_PORT" && x.predicate == "port" && x.value == Value::Int(8080)));
+        assert!(f
+            .iter()
+            .any(|x| x.subject == "BUF_MASK" && x.value == Value::Int(255)));
+        assert!(f.iter().any(|x| x.subject == "DEFAULT_PORT"
+            && x.predicate == "port"
+            && x.value == Value::Int(8080)));
     }
 }

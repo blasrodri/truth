@@ -82,8 +82,14 @@ pub fn docs(subject: &str, json: bool) -> Result<()> {
     }
 
     let headline = match report.status.as_str() {
-        "documented" => format!("`{}` is documented ({} mention(s)).", subject, report.doc_count),
-        "drift" => format!("`{}` is in the docs but NOT in the code (possible drift).", subject),
+        "documented" => format!(
+            "`{}` is documented ({} mention(s)).",
+            subject, report.doc_count
+        ),
+        "drift" => format!(
+            "`{}` is in the docs but NOT in the code (possible drift).",
+            subject
+        ),
         "undocumented" => format!("`{}` is in the code but undocumented.", subject),
         _ => format!("`{}` was not found in docs or code.", subject),
     };

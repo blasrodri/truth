@@ -104,7 +104,10 @@ impl GitHistory {
         }
         let name = path.file_name()?.to_string_lossy().into_owned();
         let out = self.git(&["log", "--format=%ct", "--", &name])?;
-        let times: Vec<i64> = out.lines().filter_map(|l| l.trim().parse::<i64>().ok()).collect();
+        let times: Vec<i64> = out
+            .lines()
+            .filter_map(|l| l.trim().parse::<i64>().ok())
+            .collect();
         if times.is_empty() {
             return None;
         }
@@ -125,12 +128,8 @@ impl GitHistory {
         // Build: git log -i -<limit> --format=<rec> --grep=p1 --grep=p2 ...
         // %x1f is a unit separator we split on; %x1e ends each record.
         let fmt = "--format=%H%x1f%an%x1f%ct%x1f%s%x1e";
-        let mut args: Vec<String> = vec![
-            "log".into(),
-            "-i".into(),
-            format!("-{limit}"),
-            fmt.into(),
-        ];
+        let mut args: Vec<String> =
+            vec!["log".into(), "-i".into(), format!("-{limit}"), fmt.into()];
         for p in patterns {
             args.push(format!("--grep={p}"));
         }
@@ -199,7 +198,9 @@ impl GitHistory {
             std::collections::HashMap::new();
         for (i, (author, ts)) in rows.iter().enumerate() {
             let weight = (n - i) as f32;
-            let e = by_author.entry((*author).to_string()).or_insert((0.0, *ts, 0));
+            let e = by_author
+                .entry((*author).to_string())
+                .or_insert((0.0, *ts, 0));
             e.0 += weight;
             e.1 = e.1.max(*ts);
             e.2 += 1;
@@ -214,7 +215,11 @@ impl GitHistory {
                 share: commits as f32 / n as f32,
             })
             .collect();
-        ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         ranked
     }
 
@@ -251,7 +256,11 @@ mod tests {
 
     /// The truth repo itself is a git work tree, so these run against real data.
     fn repo_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().to_path_buf()
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .unwrap()
+            .to_path_buf()
     }
 
     #[test]
@@ -271,7 +280,10 @@ mod tests {
         }
         // Shares are a valid distribution: each in (0,1], and they sum to ~1.
         let total: f32 = stats.iter().map(|c| c.share).sum();
-        assert!((total - 1.0).abs() < 0.01, "shares should sum to ~1, got {total}");
+        assert!(
+            (total - 1.0).abs() < 0.01,
+            "shares should sum to ~1, got {total}"
+        );
         assert!(stats.iter().all(|c| c.commits >= 1 && c.share > 0.0));
     }
 
@@ -292,7 +304,10 @@ mod tests {
     fn missing_repo_degrades_to_none() {
         let h = GitHistory::open("/definitely/not/a/repo/anywhere");
         assert!(!h.available());
-        assert_eq!(h.last_modified(Path::new("/definitely/not/a/repo/x.rs")), None);
+        assert_eq!(
+            h.last_modified(Path::new("/definitely/not/a/repo/x.rs")),
+            None
+        );
         assert!(h.commits_matching(&["fix"], 5).is_empty());
     }
 

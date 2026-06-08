@@ -11,13 +11,20 @@ use truth_core::config::Config;
 use truth_core::enums::Trigger;
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap()
+        .to_path_buf()
 }
 fn sample_repo() -> PathBuf {
     repo_root().join("examples/sample-repo")
 }
 fn sample_log() -> String {
-    repo_root().join("examples/sample-logs/api.log").to_string_lossy().into_owned()
+    repo_root()
+        .join("examples/sample-logs/api.log")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn offline_config() -> Config {
@@ -51,8 +58,10 @@ fn doctor_ready_when_indexed() {
 
     let report = doctor::run(&config, true);
     assert_eq!(report.status, "ready");
-    assert!(report.checks.iter().any(|c| c.name == "indexed_evidence"
-        && matches!(c.status, doctor::CheckStatus::Ok)));
+    assert!(report
+        .checks
+        .iter()
+        .any(|c| c.name == "indexed_evidence" && matches!(c.status, doctor::CheckStatus::Ok)));
 }
 
 #[test]
@@ -66,12 +75,19 @@ fn doctor_warns_when_not_indexed_and_suggests_index() {
 
     let report = doctor::run(&config, false);
     // No index yet → there is a warn for indexed_evidence and an index suggestion.
-    assert!(report.checks.iter().any(|c| c.name == "indexed_evidence"
-        && matches!(c.status, doctor::CheckStatus::Warn)));
-    assert!(report.suggested_commands.iter().any(|c| c.contains("index")));
+    assert!(report
+        .checks
+        .iter()
+        .any(|c| c.name == "indexed_evidence" && matches!(c.status, doctor::CheckStatus::Warn)));
+    assert!(report
+        .suggested_commands
+        .iter()
+        .any(|c| c.contains("index")));
     // Missing config is reported.
-    assert!(report.checks.iter().any(|c| c.name == "config"
-        && matches!(c.status, doctor::CheckStatus::Warn)));
+    assert!(report
+        .checks
+        .iter()
+        .any(|c| c.name == "config" && matches!(c.status, doctor::CheckStatus::Warn)));
 }
 
 #[test]
@@ -89,9 +105,13 @@ fn doctor_report_serializes_to_json() {
 fn inspect_loads_routes_constants_and_ports() {
     let (conn, _config) = indexed();
     let items = inspect::load_items(&conn).unwrap();
-    assert!(items.iter().any(|i| i.category == Category::Route && i.subject == "/v1/checkout"));
+    assert!(items
+        .iter()
+        .any(|i| i.category == Category::Route && i.subject == "/v1/checkout"));
     assert!(items.iter().any(|i| i.category == Category::Constant));
-    assert!(items.iter().any(|i| i.category == Category::Port && i.value == Some(8080.into())));
+    assert!(items
+        .iter()
+        .any(|i| i.category == Category::Port && i.value == Some(8080.into())));
 }
 
 #[test]
@@ -113,7 +133,10 @@ fn inspect_items_serialize_to_json() {
 fn baseline_detects_routes_and_runs_usage() {
     let (conn, config) = indexed();
     let report = run_baseline(&conn, &config, Some(&sample_log())).unwrap();
-    let usage = report.checks.iter().find(|c| c.kind == "usage" && c.subject == "/v1/checkout");
+    let usage = report
+        .checks
+        .iter()
+        .find(|c| c.kind == "usage" && c.subject == "/v1/checkout");
     let usage = usage.expect("usage check for /v1/checkout");
     assert_eq!(usage.status, "observed");
     assert_eq!(usage.value, Some(4.into()));
@@ -123,7 +146,11 @@ fn baseline_detects_routes_and_runs_usage() {
 fn baseline_reports_config_values_not_counts() {
     let (conn, config) = indexed();
     let report = run_baseline(&conn, &config, Some(&sample_log())).unwrap();
-    let port = report.checks.iter().find(|c| c.subject == "port").expect("port config");
+    let port = report
+        .checks
+        .iter()
+        .find(|c| c.subject == "port")
+        .expect("port config");
     assert_eq!(port.value, Some(8080.into()));
 }
 
@@ -177,7 +204,14 @@ fn recorded_fixture_yaml_is_reparseable_as_fixture() {
 fn check_without_index_hints_to_index() {
     let conn = truth_db::open_in_memory().unwrap(); // empty, not indexed
     let config = offline_config();
-    let outcome = run_check(&conn, &config, "we retry payments 3 times", Trigger::Cli, None).unwrap();
+    let outcome = run_check(
+        &conn,
+        &config,
+        "we retry payments 3 times",
+        Trigger::Cli,
+        None,
+    )
+    .unwrap();
     let hint = check_hint(&conn, &config, &outcome, None).unwrap();
     assert!(hint.expect("hint").contains("truth index ."));
 }
@@ -187,14 +221,32 @@ fn usage_claim_without_logs_hints_to_local_log() {
     // Index repo so the route is known, but provide no log source.
     let (conn, config) = indexed();
     // Remove the route from the equation by asking about a usage claim with no logs.
-    let outcome = run_check(&conn, &config, "does anyone still use /v9/foo?", Trigger::Cli, None).unwrap();
-    let hint = check_hint(&conn, &config, &outcome, None).unwrap().expect("hint");
+    let outcome = run_check(
+        &conn,
+        &config,
+        "does anyone still use /v9/foo?",
+        Trigger::Cli,
+        None,
+    )
+    .unwrap();
+    let hint = check_hint(&conn, &config, &outcome, None)
+        .unwrap()
+        .expect("hint");
     assert!(hint.contains("--local-log") || hint.contains("[loki]"));
 }
 
 #[test]
 fn supported_check_produces_no_hint() {
     let (conn, config) = indexed();
-    let outcome = run_check(&conn, &config, "the service runs on port 8080", Trigger::Cli, None).unwrap();
-    assert!(check_hint(&conn, &config, &outcome, None).unwrap().is_none());
+    let outcome = run_check(
+        &conn,
+        &config,
+        "the service runs on port 8080",
+        Trigger::Cli,
+        None,
+    )
+    .unwrap();
+    assert!(check_hint(&conn, &config, &outcome, None)
+        .unwrap()
+        .is_none());
 }

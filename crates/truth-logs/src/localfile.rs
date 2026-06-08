@@ -20,7 +20,12 @@ pub struct LocalFileSource {
 }
 
 impl LocalFileSource {
-    pub fn new(path: impl Into<String>, max_window_days: u32, max_samples: usize, include_samples: bool) -> Self {
+    pub fn new(
+        path: impl Into<String>,
+        max_window_days: u32,
+        max_samples: usize,
+        include_samples: bool,
+    ) -> Self {
         Self {
             path: path.into(),
             max_window_days,
@@ -92,7 +97,13 @@ impl LocalFileSource {
         }
     }
 
-    fn match_json(&self, v: &serde_json::Value, raw: &str, needle: &str, want_error: bool) -> Match {
+    fn match_json(
+        &self,
+        v: &serde_json::Value,
+        raw: &str,
+        needle: &str,
+        want_error: bool,
+    ) -> Match {
         let field = |k: &str| v.get(k).and_then(|x| x.as_str());
 
         // Fields searched for route/event vs error queries.
@@ -103,7 +114,10 @@ impl LocalFileSource {
             if needle.is_empty() {
                 return true;
             }
-            fields.iter().filter_map(|k| field(k)).any(|val| val.contains(needle))
+            fields
+                .iter()
+                .filter_map(|k| field(k))
+                .any(|val| val.contains(needle))
         };
 
         let level_is_error = field("level")
@@ -218,17 +232,24 @@ mod tests {
                    2026-06-04T14:04:00Z POST /v1/checkout 500 timeout\n\
                    2026-06-04T14:05:00Z GET /health 200\n";
         let src = LocalFileSource::new(tmp_log("plain", log), 30, 3, true);
-        let r = src.execute_query(spec(QueryType::RouteCount, "/v1/checkout")).unwrap();
+        let r = src
+            .execute_query(spec(QueryType::RouteCount, "/v1/checkout"))
+            .unwrap();
         assert_eq!(r.count, Some(2));
         assert!(r.latest_seen.is_some());
-        assert!(r.redacted_samples.iter().any(|s| s.contains("[REDACTED_EMAIL]")));
+        assert!(r
+            .redacted_samples
+            .iter()
+            .any(|s| s.contains("[REDACTED_EMAIL]")));
     }
 
     #[test]
     fn error_count_filters_errors_plaintext() {
         let log = "GET /v1/checkout 200\nPOST /v1/checkout 500 timeout\n";
         let src = LocalFileSource::new(tmp_log("plainerr", log), 30, 3, true);
-        let r = src.execute_query(spec(QueryType::ErrorCount, "/v1/checkout")).unwrap();
+        let r = src
+            .execute_query(spec(QueryType::ErrorCount, "/v1/checkout"))
+            .unwrap();
         assert_eq!(r.count, Some(1));
     }
 
@@ -239,11 +260,23 @@ mod tests {
 {"timestamp":"2026-06-04T14:05:00Z","route":"/health","status":200}
 "#;
         let src = LocalFileSource::new(tmp_log("jsonl", log), 30, 3, true);
-        let r = src.execute_query(spec(QueryType::RouteCount, "/v1/checkout")).unwrap();
+        let r = src
+            .execute_query(spec(QueryType::RouteCount, "/v1/checkout"))
+            .unwrap();
         assert_eq!(r.count, Some(2));
-        assert_eq!(r.latest_seen, Some(chrono::DateTime::parse_from_rfc3339("2026-06-04T14:04:00Z").unwrap().timestamp()));
+        assert_eq!(
+            r.latest_seen,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-06-04T14:04:00Z")
+                    .unwrap()
+                    .timestamp()
+            )
+        );
         // Email inside the JSON is redacted in the stored sample.
-        assert!(r.redacted_samples.iter().any(|s| s.contains("[REDACTED_EMAIL]")));
+        assert!(r
+            .redacted_samples
+            .iter()
+            .any(|s| s.contains("[REDACTED_EMAIL]")));
     }
 
     #[test]
@@ -253,7 +286,9 @@ mod tests {
 {"timestamp":"2026-06-04T14:07:00Z","level":"info","route":"/v1/checkout"}
 "#;
         let src = LocalFileSource::new(tmp_log("jsonlerr", log), 30, 3, true);
-        let r = src.execute_query(spec(QueryType::ErrorCount, "payment_timeout")).unwrap();
+        let r = src
+            .execute_query(spec(QueryType::ErrorCount, "payment_timeout"))
+            .unwrap();
         assert_eq!(r.count, Some(2));
     }
 
@@ -263,7 +298,16 @@ mod tests {
 {"timestamp":"2026-06-04T15:03:00Z","route":"/v1/checkout"}
 "#;
         let src = LocalFileSource::new(tmp_log("jsonllatest", log), 30, 3, true);
-        let r = src.execute_query(spec(QueryType::LatestOccurrence, "/v1/checkout")).unwrap();
-        assert_eq!(r.latest_seen, Some(chrono::DateTime::parse_from_rfc3339("2026-06-04T15:03:00Z").unwrap().timestamp()));
+        let r = src
+            .execute_query(spec(QueryType::LatestOccurrence, "/v1/checkout"))
+            .unwrap();
+        assert_eq!(
+            r.latest_seen,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-06-04T15:03:00Z")
+                    .unwrap()
+                    .timestamp()
+            )
+        );
     }
 }

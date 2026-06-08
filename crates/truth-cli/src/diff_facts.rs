@@ -207,7 +207,10 @@ mod tests {
             file: None,
         };
         assert_eq!(f.present_after(), Some(false));
-        assert_eq!(f.as_existence_item().unwrap().value_json, Some(json!(false)));
+        assert_eq!(
+            f.as_existence_item().unwrap().value_json,
+            Some(json!(false))
+        );
     }
 
     #[test]

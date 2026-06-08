@@ -34,7 +34,10 @@ fn main() {
             Ok(v) => v,
             Err(e) => {
                 // Parse error — JSON-RPC code -32700. No id available.
-                write_msg(&mut out, &error_response(Value::Null, -32700, &format!("parse error: {e}")));
+                write_msg(
+                    &mut out,
+                    &error_response(Value::Null, -32700, &format!("parse error: {e}")),
+                );
                 continue;
             }
         };
@@ -52,7 +55,11 @@ fn main() {
             "ping" => Some(result_response(id.clone(), json!({}))),
             other => {
                 if id.is_some() {
-                    Some(error_response(id.clone().unwrap_or(Value::Null), -32601, &format!("method not found: {other}")))
+                    Some(error_response(
+                        id.clone().unwrap_or(Value::Null),
+                        -32601,
+                        &format!("method not found: {other}"),
+                    ))
                 } else {
                     None
                 }
@@ -129,15 +136,25 @@ fn handle_tools_call(id: Option<Value>, req: &Value) -> Value {
     let params = req.get("params").cloned().unwrap_or(json!({}));
     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
     if name != "verify_turn" {
-        return error_response(id.unwrap_or(Value::Null), -32602, &format!("unknown tool: {name}"));
+        return error_response(
+            id.unwrap_or(Value::Null),
+            -32602,
+            &format!("unknown tool: {name}"),
+        );
     }
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     let message = match args.get("message").and_then(|m| m.as_str()) {
         Some(m) if !m.trim().is_empty() => m.to_string(),
         _ => return tool_error(id, "`message` is required and must be non-empty"),
     };
-    let repo = args.get("repo").and_then(|r| r.as_str()).map(|s| s.to_string());
-    let local_log = args.get("local_log").and_then(|l| l.as_str()).map(|s| s.to_string());
+    let repo = args
+        .get("repo")
+        .and_then(|r| r.as_str())
+        .map(|s| s.to_string());
+    let local_log = args
+        .get("local_log")
+        .and_then(|l| l.as_str())
+        .map(|s| s.to_string());
 
     match run_verify(&message, repo.as_deref(), local_log.as_deref()) {
         Ok((text, structured)) => result_response(

@@ -150,8 +150,13 @@ pub fn run_check(
             if report.files_scanned > 0 {
                 symbol_status = Some(report.status.clone());
                 evidence_lines.push(match report.status.as_str() {
-                    "referenced" => format!("code: `{subject}` is defined/referenced ({} hit(s))", report.count),
-                    "definition_only" => format!("code: `{subject}` is defined (no other references)"),
+                    "referenced" => format!(
+                        "code: `{subject}` is defined/referenced ({} hit(s))",
+                        report.count
+                    ),
+                    "definition_only" => {
+                        format!("code: `{subject}` is defined (no other references)")
+                    }
                     _ => format!("code: `{subject}` not found in the indexed code"),
                 });
             }
@@ -257,8 +262,11 @@ fn log_evidence_json(
         kind: res.query_type.as_label().to_string(),
         subject: needle,
         value: res.count.map(|c| c.into()),
-        unit: matches!(res.query_type, QueryType::RouteCount | QueryType::EventCount)
-            .then(|| "requests".to_string()),
+        unit: matches!(
+            res.query_type,
+            QueryType::RouteCount | QueryType::EventCount
+        )
+        .then(|| "requests".to_string()),
         citation,
     }
 }
@@ -321,7 +329,9 @@ fn run_repo_query(
             // natural-language subjects, never literal `/`-paths.
             let is_literal_path = subj.trim_start().starts_with('/');
             if !is_literal_path
-                && !items.iter().any(|i| i.predicate.as_deref() == Some("route_exists"))
+                && !items
+                    .iter()
+                    .any(|i| i.predicate.as_deref() == Some("route_exists"))
             {
                 if let Some(res) = resolve_route(conn, &subj)? {
                     lines.push(format!(
@@ -383,7 +393,10 @@ fn run_repo_query(
                 .filter(|i| i.predicate.as_deref() == Some("dependency_exists"))
                 .collect();
             if let Some(it) = items.first() {
-                lines.push(format!("repo: `{subj}` is a declared dependency ({})", uri_line(it)));
+                lines.push(format!(
+                    "repo: `{subj}` is a declared dependency ({})",
+                    uri_line(it)
+                ));
                 json.push(EvidenceJson {
                     source: "repo".into(),
                     kind: "dependency_exists".into(),
@@ -431,7 +444,9 @@ fn route_candidates(conn: &Connection) -> Result<Vec<truth_core::concept::Candid
         if i.predicate.as_deref() != Some("route_exists") {
             continue;
         }
-        let Some(route) = i.subject_text else { continue };
+        let Some(route) = i.subject_text else {
+            continue;
+        };
         // Accumulate the richest search text seen for this route. Always include
         // the path words themselves so token-overlap still works.
         let label = i.object_text.unwrap_or_default();
@@ -464,7 +479,11 @@ fn resolve_route(
 /// against indexed routes is worth attempting.
 fn needs_subject_resolution(claim: &truth_core::claim::StructuredClaim) -> bool {
     use truth_core::claim::ClaimType;
-    let no_subject = claim.subject.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
+    let no_subject = claim
+        .subject
+        .as_deref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true);
     no_subject
         && matches!(
             claim.claim_type,
@@ -496,8 +515,13 @@ fn code_reference_evidence(
         return Ok(None);
     }
     let line = match report.status.as_str() {
-        "referenced" => format!("code: `{subject}` is referenced {} time(s) in the repo", report.count),
-        "definition_only" => format!("code: `{subject}` is defined but never referenced (dead-code signal)"),
+        "referenced" => format!(
+            "code: `{subject}` is referenced {} time(s) in the repo",
+            report.count
+        ),
+        "definition_only" => {
+            format!("code: `{subject}` is defined but never referenced (dead-code signal)")
+        }
         _ => format!("code: `{subject}` not found in the indexed code"),
     };
     let j = EvidenceJson {
@@ -506,7 +530,10 @@ fn code_reference_evidence(
         subject: Some(subject.to_string()),
         value: Some(report.count.into()),
         unit: Some("references".into()),
-        citation: report.samples.first().map(|h| format!("{}:{}", h.file, h.line)),
+        citation: report
+            .samples
+            .first()
+            .map(|h| format!("{}:{}", h.file, h.line)),
     };
     Ok(Some((line, j)))
 }
@@ -517,7 +544,10 @@ fn code_reference_evidence(
 fn doc_evidence(conn: &Connection, subject: &str) -> Result<Option<(String, EvidenceJson)>> {
     let report = crate::docs::build_report(conn, subject)?;
     let line = match report.status.as_str() {
-        "documented" => format!("docs: `{subject}` is documented ({} mention(s))", report.doc_count),
+        "documented" => format!(
+            "docs: `{subject}` is documented ({} mention(s))",
+            report.doc_count
+        ),
         "drift" => format!("docs: `{subject}` appears in docs but not in code (possible drift)"),
         _ => return Ok(None),
     };
@@ -527,7 +557,10 @@ fn doc_evidence(conn: &Connection, subject: &str) -> Result<Option<(String, Evid
         subject: Some(subject.to_string()),
         value: Some(report.doc_count.into()),
         unit: Some("mentions".into()),
-        citation: report.doc_samples.first().map(|h| format!("{}:{}", h.file, h.line)),
+        citation: report
+            .doc_samples
+            .first()
+            .map(|h| format!("{}:{}", h.file, h.line)),
     };
     Ok(Some((line, j)))
 }
@@ -560,13 +593,29 @@ fn git_recency_for(item: &EvidenceItem) -> Option<(String, EvidenceJson)> {
 
 fn uri_line_opt(item: &EvidenceItem) -> Option<String> {
     let uri = item.metadata_json.get("uri").and_then(|v| v.as_str())?;
-    let line = item.metadata_json.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-    Some(if line > 0 { format!("{uri}:{line}") } else { uri.to_string() })
+    let line = item
+        .metadata_json
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    Some(if line > 0 {
+        format!("{uri}:{line}")
+    } else {
+        uri.to_string()
+    })
 }
 
 fn uri_line(item: &EvidenceItem) -> String {
-    let uri = item.metadata_json.get("uri").and_then(|v| v.as_str()).unwrap_or("?");
-    let line = item.metadata_json.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+    let uri = item
+        .metadata_json
+        .get("uri")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let line = item
+        .metadata_json
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     if line > 0 {
         format!("{uri}:{line}")
     } else {

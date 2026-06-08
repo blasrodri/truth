@@ -5,7 +5,12 @@ use std::process::Command;
 use truth_cli::owners::build_report;
 
 fn sh(dir: &std::path::Path, args: &[&str]) {
-    let ok = Command::new(args[0]).args(&args[1..]).current_dir(dir).status().unwrap().success();
+    let ok = Command::new(args[0])
+        .args(&args[1..])
+        .current_dir(dir)
+        .status()
+        .unwrap()
+        .success();
     assert!(ok, "command failed: {args:?}");
 }
 
@@ -20,7 +25,11 @@ fn owners_reports_declared_maintainer() {
         "PAYMENTS\nM:\tAlice Pay <alice@example.com>\nR:\tBob Review <bob@example.com>\nF:\tsrc/\n",
     )
     .unwrap();
-    std::fs::write(dir.join("src/routes.rs"), "fn r(r:&mut R){ r.post(\"/v1/checkout\", h); }\n").unwrap();
+    std::fs::write(
+        dir.join("src/routes.rs"),
+        "fn r(r:&mut R){ r.post(\"/v1/checkout\", h); }\n",
+    )
+    .unwrap();
 
     // Make it a real git repo with one commit.
     sh(&dir, &["git", "init", "-q"]);
@@ -39,11 +48,17 @@ fn owners_reports_declared_maintainer() {
     let report = build_report(&conn, &file.to_string_lossy()).unwrap();
 
     assert!(
-        report.owners.iter().any(|o| o.who.contains("Alice Pay") && o.kind == "maintainer"),
+        report
+            .owners
+            .iter()
+            .any(|o| o.who.contains("Alice Pay") && o.kind == "maintainer"),
         "owners: {:?}",
         report.owners
     );
-    assert!(report.owners.iter().any(|o| o.who.contains("Bob Review") && o.kind == "reviewer"));
+    assert!(report
+        .owners
+        .iter()
+        .any(|o| o.who.contains("Bob Review") && o.kind == "reviewer"));
     // The committer (also Alice) appears as a git signal.
     assert!(report.owners.iter().any(|o| o.kind == "recent_committer"));
 

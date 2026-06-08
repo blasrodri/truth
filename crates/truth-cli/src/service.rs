@@ -90,7 +90,9 @@ pub fn run_log_query(
         needle: Some(needle.to_string()),
         window: window.map(str::to_string),
         environment: env.map(str::to_string),
-        service: service.map(str::to_string).or_else(|| default_service(config)),
+        service: service
+            .map(str::to_string)
+            .or_else(|| default_service(config)),
     };
 
     if let Some(path) = local_log {
@@ -122,8 +124,16 @@ pub fn run_log_query(
 /// Citation `uri:line` for a repo evidence item, if present.
 fn uri_line(item: &truth_core::models::EvidenceItem) -> Option<String> {
     let uri = item.metadata_json.get("uri").and_then(|v| v.as_str())?;
-    let line = item.metadata_json.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-    Some(if line > 0 { format!("{uri}:{line}") } else { uri.to_string() })
+    let line = item
+        .metadata_json
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    Some(if line > 0 {
+        format!("{uri}:{line}")
+    } else {
+        uri.to_string()
+    })
 }
 
 fn fmt_ts(secs: i64) -> String {
@@ -165,7 +175,15 @@ pub fn run_usage(
     let mut evidence = Vec::new();
     let mut caveats = Vec::new();
 
-    let log_res = run_log_query(config, QueryType::RouteCount, subject, window, env, service, local_log)?;
+    let log_res = run_log_query(
+        config,
+        QueryType::RouteCount,
+        subject,
+        window,
+        env,
+        service,
+        local_log,
+    )?;
     let count = log_res.as_ref().and_then(|r| r.count);
     let latest = log_res.as_ref().and_then(|r| r.latest_seen);
     if log_res.is_some() {
@@ -256,7 +274,15 @@ pub fn run_errors(
     let mut evidence = Vec::new();
     let mut caveats = Vec::new();
 
-    let log_res = run_log_query(config, QueryType::ErrorCount, pattern, window, env, service, local_log)?;
+    let log_res = run_log_query(
+        config,
+        QueryType::ErrorCount,
+        pattern,
+        window,
+        env,
+        service,
+        local_log,
+    )?;
     let count = log_res.as_ref().and_then(|r| r.count);
     let latest = log_res.as_ref().and_then(|r| r.latest_seen);
 
@@ -313,7 +339,15 @@ pub fn run_latest(
     let mut evidence = Vec::new();
     let mut caveats = Vec::new();
 
-    let log_res = run_log_query(config, QueryType::LatestOccurrence, pattern, window, env, service, local_log)?;
+    let log_res = run_log_query(
+        config,
+        QueryType::LatestOccurrence,
+        pattern,
+        window,
+        env,
+        service,
+        local_log,
+    )?;
     let latest = log_res.as_ref().and_then(|r| r.latest_seen);
 
     if log_res.is_some() {
@@ -363,7 +397,10 @@ pub fn run_config(conn: &Connection, key: &str) -> Result<Observation> {
         let value = it.value_json.clone();
         evidence.push(EvidenceJson {
             source: "repo".to_string(),
-            kind: it.predicate.clone().unwrap_or_else(|| "definition".to_string()),
+            kind: it
+                .predicate
+                .clone()
+                .unwrap_or_else(|| "definition".to_string()),
             subject: it.subject_text.clone(),
             value,
             unit: it.unit.clone(),
@@ -390,7 +427,10 @@ pub fn run_config(conn: &Connection, key: &str) -> Result<Observation> {
             subject: Some(key.to_string()),
             count: Some(evidence.len() as i64),
             latest_seen: None,
-            summary: format!("Found {} config/code definition(s) for `{key}`.", evidence.len()),
+            summary: format!(
+                "Found {} config/code definition(s) for `{key}`.",
+                evidence.len()
+            ),
             evidence,
             caveats: vec!["Based on the indexed repo at index time.".to_string()],
         })
@@ -420,7 +460,11 @@ pub fn render_observation(obs: &Observation) -> String {
                 .as_ref()
                 .map(|v| format!(" = {v}"))
                 .unwrap_or_default();
-            let cite = e.citation.as_ref().map(|c| format!(" ({c})")).unwrap_or_default();
+            let cite = e
+                .citation
+                .as_ref()
+                .map(|c| format!(" ({c})"))
+                .unwrap_or_default();
             out.push_str(&format!("• {} {}{}{}\n", e.source, e.kind, val, cite));
         }
     }

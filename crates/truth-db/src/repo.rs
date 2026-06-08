@@ -132,7 +132,8 @@ fn oi(v: Option<i64>) -> SqlValue {
     v.map(SqlValue::Integer).unwrap_or(SqlValue::Null)
 }
 fn ou(v: Option<u32>) -> SqlValue {
-    v.map(|x| SqlValue::Integer(x as i64)).unwrap_or(SqlValue::Null)
+    v.map(|x| SqlValue::Integer(x as i64))
+        .unwrap_or(SqlValue::Null)
 }
 
 /// Bulk-insert artifacts via chunked multi-row INSERTs. Caller wraps in a tx.
@@ -329,9 +330,8 @@ pub fn all_evidence(conn: &Connection) -> Result<Vec<EvidenceItem>> {
 /// All indexed repo file URIs (the corpus a reference finder re-reads). Code
 /// files only (git_repo source).
 pub fn repo_file_uris(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT uri FROM artifacts WHERE source = 'git_repo' ORDER BY uri",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT uri FROM artifacts WHERE source = 'git_repo' ORDER BY uri")?;
     let rows = stmt
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -405,12 +405,14 @@ impl IndexStatus {
 /// Report whether the index has any artifacts and when it was last written.
 pub fn index_status(conn: &Connection) -> Result<IndexStatus> {
     let artifacts = count_rows(conn, "artifacts")?;
-    let last_indexed_at: Option<i64> = conn.query_row(
-        "SELECT MAX(observed_at) FROM artifacts",
-        [],
-        |r| r.get::<_, Option<i64>>(0),
-    )?;
-    Ok(IndexStatus { artifacts, last_indexed_at })
+    let last_indexed_at: Option<i64> =
+        conn.query_row("SELECT MAX(observed_at) FROM artifacts", [], |r| {
+            r.get::<_, Option<i64>>(0)
+        })?;
+    Ok(IndexStatus {
+        artifacts,
+        last_indexed_at,
+    })
 }
 
 /// Fetch a single check by id.
@@ -582,7 +584,15 @@ pub fn repo_prior_files(conn: &Connection) -> Result<std::collections::HashMap<S
         let v: serde_json::Value = serde_json::from_str(&meta).unwrap_or_default();
         let mtime = v.get("mtime").and_then(|x| x.as_i64()).unwrap_or(0);
         let size = v.get("size").and_then(|x| x.as_u64()).unwrap_or(0);
-        map.insert(uri, PriorFile { artifact_id: id, hash, mtime, size });
+        map.insert(
+            uri,
+            PriorFile {
+                artifact_id: id,
+                hash,
+                mtime,
+                size,
+            },
+        );
     }
     Ok(map)
 }

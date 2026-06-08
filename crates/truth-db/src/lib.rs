@@ -16,8 +16,8 @@ pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
                 .with_context(|| format!("creating db dir {}", parent.display()))?;
         }
     }
-    let conn = Connection::open(path)
-        .with_context(|| format!("opening sqlite at {}", path.display()))?;
+    let conn =
+        Connection::open(path).with_context(|| format!("opening sqlite at {}", path.display()))?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     migrate::run(&conn)?;
     Ok(conn)

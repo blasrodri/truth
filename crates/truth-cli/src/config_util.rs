@@ -16,5 +16,8 @@ pub fn load_config() -> Result<Config> {
 
 /// Pretty-print a JSON value to stdout.
 pub fn print_json(v: &serde_json::Value) {
-    println!("{}", serde_json::to_string_pretty(v).expect("json serializes"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(v).expect("json serializes")
+    );
 }

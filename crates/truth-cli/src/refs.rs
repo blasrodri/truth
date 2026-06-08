@@ -76,7 +76,9 @@ pub fn scan_references(
     let mut scanned = 0;
 
     for file in files {
-        let Ok(contents) = std::fs::read_to_string(file) else { continue };
+        let Ok(contents) = std::fs::read_to_string(file) else {
+            continue;
+        };
         scanned += 1;
         for (i, line) in contents.lines().enumerate() {
             let line_no = (i + 1) as u32;
@@ -111,8 +113,14 @@ pub fn build_report(conn: &rusqlite::Connection, symbol: &str) -> Result<RefsRep
         .find(|i| i.subject_text.as_deref() == Some(symbol));
     let (def_file, def_line) = match &def {
         Some(it) => (
-            it.metadata_json.get("uri").and_then(|v| v.as_str()).map(String::from),
-            it.metadata_json.get("line").and_then(|v| v.as_u64()).map(|n| n as u32),
+            it.metadata_json
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            it.metadata_json
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32),
         ),
         None => (None, None),
     };
@@ -122,16 +130,23 @@ pub fn build_report(conn: &rusqlite::Connection, symbol: &str) -> Result<RefsRep
 
     let mut caveats = vec![
         "Text references in indexed files; excludes the definition site.".to_string(),
-        "A reference is not proof of runtime use (and vice-versa) — pair with `truth usage`.".to_string(),
+        "A reference is not proof of runtime use (and vice-versa) — pair with `truth usage`."
+            .to_string(),
     ];
 
     let status = if count > 0 {
         "referenced"
     } else if def.is_some() {
-        caveats.push("Defined but never referenced in the indexed code — a strong dead-code signal.".to_string());
+        caveats.push(
+            "Defined but never referenced in the indexed code — a strong dead-code signal."
+                .to_string(),
+        );
         "definition_only"
     } else {
-        caveats.push("Not found in the indexed code at all (check spelling or run `truth index .`).".to_string());
+        caveats.push(
+            "Not found in the indexed code at all (check spelling or run `truth index .`)."
+                .to_string(),
+        );
         "unreferenced"
     };
 
@@ -157,7 +172,10 @@ pub fn uses(symbol: &str, json: bool) -> Result<()> {
     }
 
     let headline = match report.status.as_str() {
-        "referenced" => format!("`{}` is referenced {} time(s) in code.", symbol, report.count),
+        "referenced" => format!(
+            "`{}` is referenced {} time(s) in code.",
+            symbol, report.count
+        ),
         "definition_only" => format!("`{}` is defined but never referenced in code.", symbol),
         _ => format!("`{}` was not found in the indexed code.", symbol),
     };

@@ -32,7 +32,8 @@ impl Format {
 
 /// Read and parse a claim file (v1 `claims:` format).
 pub fn load_claim_file(path: &str) -> Result<ClaimFile> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading claim file {path}"))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading claim file {path}"))?;
     ClaimFile::from_yaml(&text).with_context(|| format!("parsing claim file {path}"))
 }
 
@@ -102,7 +103,9 @@ fn title(db_status: &str) -> String {
         .split('_')
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -117,7 +120,12 @@ pub fn render_text(report: &Report) -> String {
     out.push_str(&summary_lines(report));
     out.push_str("\nFindings:\n");
     for r in &report.results {
-        out.push_str(&format!("\n[{}] {} — {}\n", r.severity.as_str(), r.id, title(&r.status)));
+        out.push_str(&format!(
+            "\n[{}] {} — {}\n",
+            r.severity.as_str(),
+            r.id,
+            title(&r.status)
+        ));
         out.push_str(&format!("  claim: {}\n", r.text));
         out.push_str(&format!("  {}\n", r.summary));
         for e in &r.evidence {
@@ -140,9 +148,15 @@ pub fn render_markdown(report: &Report) -> String {
     out.push_str("| Status | Count |\n|---|---:|\n");
     out.push_str(&format!("| Supported | {} |\n", s.supported));
     out.push_str(&format!("| Contradicted | {} |\n", s.contradicted));
-    out.push_str(&format!("| Partially supported | {} |\n", s.partially_supported));
+    out.push_str(&format!(
+        "| Partially supported | {} |\n",
+        s.partially_supported
+    ));
     out.push_str(&format!("| Inconclusive | {} |\n", s.inconclusive));
-    out.push_str(&format!("| Needs more context | {} |\n", s.needs_more_context));
+    out.push_str(&format!(
+        "| Needs more context | {} |\n",
+        s.needs_more_context
+    ));
     out.push_str("\n## Findings\n");
     for r in &report.results {
         out.push_str(&format!("\n### {} — {}\n\n", r.id, title(&r.status)));
@@ -174,7 +188,10 @@ fn summary_lines(report: &Report) -> String {
     out.push_str(&format!("  Supported: {}\n", s.supported));
     out.push_str(&format!("  Contradicted: {}\n", s.contradicted));
     if s.partially_supported > 0 {
-        out.push_str(&format!("  Partially supported: {}\n", s.partially_supported));
+        out.push_str(&format!(
+            "  Partially supported: {}\n",
+            s.partially_supported
+        ));
     }
     out.push_str(&format!("  Inconclusive: {}\n", s.inconclusive));
     if s.needs_more_context > 0 {
@@ -184,9 +201,21 @@ fn summary_lines(report: &Report) -> String {
 }
 
 fn evidence_line(e: &RenderedEvidence) -> String {
-    let val = e.value.as_ref().map(|v| format!(" = {v}")).unwrap_or_default();
-    let cite = e.citation.as_ref().map(|c| format!(" ({c})")).unwrap_or_default();
-    let subj = e.subject.as_ref().map(|s| format!(" {s}")).unwrap_or_default();
+    let val = e
+        .value
+        .as_ref()
+        .map(|v| format!(" = {v}"))
+        .unwrap_or_default();
+    let cite = e
+        .citation
+        .as_ref()
+        .map(|c| format!(" ({c})"))
+        .unwrap_or_default();
+    let subj = e
+        .subject
+        .as_ref()
+        .map(|s| format!(" {s}"))
+        .unwrap_or_default();
     format!("{} {}{subj}{val}{cite}", e.source, e.kind)
 }
 

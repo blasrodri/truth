@@ -29,10 +29,16 @@ fn classifies_documented_undocumented_and_drift() {
     let (conn, dir) = indexed_repo();
 
     // In code AND docs.
-    assert_eq!(build_report(&conn, "/v1/checkout").unwrap().status, "documented");
+    assert_eq!(
+        build_report(&conn, "/v1/checkout").unwrap().status,
+        "documented"
+    );
 
     // In code, not docs.
-    assert_eq!(build_report(&conn, "/v1/secret").unwrap().status, "undocumented");
+    assert_eq!(
+        build_report(&conn, "/v1/secret").unwrap().status,
+        "undocumented"
+    );
 
     // In docs, NOT in code — the drift case.
     let drift = build_report(&conn, "/v1/refund").unwrap();

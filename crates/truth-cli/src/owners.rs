@@ -96,7 +96,12 @@ pub fn build_report(conn: &rusqlite::Connection, subject: &str) -> Result<Owners
         caveats.push(format!(
             "Could not resolve `{subject}` to any indexed file. Try `truth index .` or a file path."
         ));
-        return Ok(OwnersReport { subject: subject.to_string(), files, owners, caveats });
+        return Ok(OwnersReport {
+            subject: subject.to_string(),
+            files,
+            owners,
+            caveats,
+        });
     }
 
     let mut any_explicit = false;
@@ -179,7 +184,12 @@ pub fn build_report(conn: &rusqlite::Connection, subject: &str) -> Result<Owners
         caveats.push("No ownership signal found for the resolved file(s).".to_string());
     }
 
-    Ok(OwnersReport { subject: subject.to_string(), files, owners, caveats })
+    Ok(OwnersReport {
+        subject: subject.to_string(),
+        files,
+        owners,
+        caveats,
+    })
 }
 
 /// Walk up from a file to find the nearest ancestor with ownership data, so a
@@ -241,7 +251,11 @@ pub fn owners(subject: &str, json: bool) -> Result<()> {
     if !committers.is_empty() {
         println!("\nRecently worked on this code (git):");
         for o in committers {
-            let when = o.last_active.as_deref().map(|d| format!(", last {d}")).unwrap_or_default();
+            let when = o
+                .last_active
+                .as_deref()
+                .map(|d| format!(", last {d}"))
+                .unwrap_or_default();
             // Show commit count + share so a clear owner is visible.
             let activity = match (o.commits, o.share) {
                 (Some(n), Some(s)) => format!(" — {n} commit(s), {:.0}%", s * 100.0),

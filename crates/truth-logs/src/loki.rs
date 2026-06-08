@@ -39,7 +39,10 @@ impl LokiSource {
     }
 
     fn label(&self, key: &str) -> String {
-        self.labels.get(key).cloned().unwrap_or_else(|| key.to_string())
+        self.labels
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| key.to_string())
     }
 
     /// Build the label selector `{env="prod", service="api"}`.
@@ -93,11 +96,16 @@ impl QueryableSource for LokiSource {
 
         let is_instant = matches!(
             spec.query_type,
-            QueryType::RouteCount | QueryType::EventCount | QueryType::ErrorCount | QueryType::JobSuccess
+            QueryType::RouteCount
+                | QueryType::EventCount
+                | QueryType::ErrorCount
+                | QueryType::JobSuccess
         );
 
         let (count, latest, samples) = if is_instant {
-            let count = self.query_instant(&logql, now).context("loki instant query")?;
+            let count = self
+                .query_instant(&logql, now)
+                .context("loki instant query")?;
             (Some(count), None, vec![])
         } else {
             let (latest, samples) = self

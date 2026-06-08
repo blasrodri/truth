@@ -37,12 +37,10 @@ pub struct Extracted<'a> {
 // capturing regexes and the combined `RegexSet`, so the two can never drift.
 const RE_ROUTE: &str = r#"["'`](/[A-Za-z0-9_][A-Za-z0-9_/\-.:{}]*)["'`]"#;
 const RE_PORT: &str = r#"(?i)\bport\b"?\s*[:=]\s*"?(\d{2,5})"#;
-const RE_RETRY: &str =
-    r#"(?i)([A-Za-z0-9_]*retr(?:y|ies)[A-Za-z0-9_]*)\s*(?::\s*[A-Za-z0-9_:<>\[\]]+)?\s*[:=]\s*(\d+)"#;
+const RE_RETRY: &str = r#"(?i)([A-Za-z0-9_]*retr(?:y|ies)[A-Za-z0-9_]*)\s*(?::\s*[A-Za-z0-9_:<>\[\]]+)?\s*[:=]\s*(\d+)"#;
 const RE_TIMEOUT: &str =
     r#"(?i)([A-Za-z0-9_]*timeout[A-Za-z0-9_]*)\s*(?::\s*[A-Za-z0-9_:<>\[\]]+)?\s*[:=]\s*(\d+)"#;
-const RE_NAMED_CONST: &str =
-    r#"(?:(?:pub\s+)?const|let|export\s+const|var|final|static)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[A-Za-z0-9_:<>\[\]]+)?\s*=\s*(\d+)\b"#;
+const RE_NAMED_CONST: &str = r#"(?:(?:pub\s+)?const|let|export\s+const|var|final|static)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[A-Za-z0-9_:<>\[\]]+)?\s*=\s*(\d+)\b"#;
 const RE_ENV_VAR: &str = r#"(?x)
     (?:std::)?env::var\s*\(\s*["']([A-Z][A-Z0-9_]+)["']
     | (?i:os\.)?(?i:getenv)\s*\(\s*["']([A-Z][A-Z0-9_]+)["']
@@ -53,7 +51,8 @@ const RE_ENV_VAR: &str = r#"(?x)
 const RE_COMPOSE_PORT: &str = r#"^\s*-\s*["']?(\d{2,5}):\d{2,5}["']?\s*$"#;
 // C/C++/Obj-C preprocessor numeric constant: `#define NAME 5` / `#define NAME 0x1F`.
 // Group 1 = name, group 2 = value. No `=` (the C idiom the other patterns miss).
-const RE_CDEFINE: &str = r#"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s+\(?\s*(\d+|0[xX][0-9a-fA-F]+)\b"#;
+const RE_CDEFINE: &str =
+    r#"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s+\(?\s*(\d+|0[xX][0-9a-fA-F]+)\b"#;
 
 struct Pats {
     route: Regex,
@@ -112,9 +111,11 @@ fn line_may_match(line: &str) -> bool {
         return true;
     }
     // Quote-less env forms: process.env.X / os.environ / getenv. Cheap contains.
-    let lower_has = |needle: &str| line.as_bytes().windows(needle.len()).any(|w| {
-        w.eq_ignore_ascii_case(needle.as_bytes())
-    });
+    let lower_has = |needle: &str| {
+        line.as_bytes()
+            .windows(needle.len())
+            .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+    };
     lower_has("env") || lower_has("getenv")
 }
 
@@ -184,7 +185,13 @@ pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
                 // route-shaped. Rejects file paths, derivation paths (`/0`,
                 // `/637`), and format strings that dominated false positives.
                 if has_signal || route_shaped(route) {
-                    let mut f = fact(route, "route_exists", serde_json::Value::Bool(true), line_no, line);
+                    let mut f = fact(
+                        route,
+                        "route_exists",
+                        serde_json::Value::Bool(true),
+                        line_no,
+                        line,
+                    );
                     f.label = Some(route_label(route, line, &lines, i));
                     out.push(f);
                 }
@@ -197,7 +204,14 @@ pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
                 // engine finds it, and by the original identifier name as subject
                 // so `truth config <NAME>` can find it. Group spans borrow `line`.
                 let (name, val) = (group(line, &c, 1), group(line, &c, 2));
-                push_num(&mut out, name, Cow::Borrowed("retry_count"), val, line_no, line);
+                push_num(
+                    &mut out,
+                    name,
+                    Cow::Borrowed("retry_count"),
+                    val,
+                    line_no,
+                    line,
+                );
                 specific = true;
             }
         }
@@ -210,13 +224,27 @@ pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
         }
         if p.port.is_match(line) {
             if let Some(c) = p.port.captures(line) {
-                push_num(&mut out, "port", Cow::Borrowed("port"), group(line, &c, 1), line_no, line);
+                push_num(
+                    &mut out,
+                    "port",
+                    Cow::Borrowed("port"),
+                    group(line, &c, 1),
+                    line_no,
+                    line,
+                );
                 specific = true;
             }
         } else if p.compose_port.is_match(line) {
             if let Some(c) = p.compose_port.captures(line) {
                 // Published host port in a docker-compose `ports:` list.
-                push_num(&mut out, "port", Cow::Borrowed("port"), group(line, &c, 1), line_no, line);
+                push_num(
+                    &mut out,
+                    "port",
+                    Cow::Borrowed("port"),
+                    group(line, &c, 1),
+                    line_no,
+                    line,
+                );
                 specific = true;
             }
         }
@@ -229,7 +257,14 @@ pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
                 // hardware/register/enum/chip artifact).
                 if is_constish(name) && is_config_relevant(name) && !looks_like_chip_macro(name) {
                     let val = group(line, &c, 2);
-                    push_num(&mut out, name, Cow::Owned(name.to_uppercase()), val, line_no, line);
+                    push_num(
+                        &mut out,
+                        name,
+                        Cow::Owned(name.to_uppercase()),
+                        val,
+                        line_no,
+                        line,
+                    );
                 }
             }
         }
@@ -238,7 +273,13 @@ pub fn extract_file<'a>(path: &Path, contents: &'a str) -> Vec<Extracted<'a>> {
                 // Pick whichever alternative group matched.
                 if let Some(g) = (1..=5).find(|g| c.get(*g).is_some()) {
                     let name = group(line, &c, g);
-                    out.push(fact(name, "env_var_exists", serde_json::Value::Bool(true), line_no, line));
+                    out.push(fact(
+                        name,
+                        "env_var_exists",
+                        serde_json::Value::Bool(true),
+                        line_no,
+                        line,
+                    ));
                 }
             }
         }
@@ -293,12 +334,46 @@ fn fact<'a>(
 /// Framework HTTP route-registration signals. If a line contains one of these,
 /// a quoted `/x` on it is very likely a real route.
 const ROUTE_SIGNALS: &[&str] = &[
-    ".get(", ".post(", ".put(", ".patch(", ".delete(", ".head(", ".options(",
-    ".route(", ".routes(", ".handle(", ".at(", ".mount(", ".nest(", ".service(",
-    "handlefunc(", "handle(", "@get", "@post", "@put", "@patch", "@delete",
-    "@app.", "@router.", "@route", "@requestmapping", "@getmapping", "@postmapping",
-    "router.", "route!", "web::resource", "addroute", "register", "endpoint",
-    "path(", "url(", "uri(", "r.get", "r.post", "app.get", "app.post",
+    ".get(",
+    ".post(",
+    ".put(",
+    ".patch(",
+    ".delete(",
+    ".head(",
+    ".options(",
+    ".route(",
+    ".routes(",
+    ".handle(",
+    ".at(",
+    ".mount(",
+    ".nest(",
+    ".service(",
+    "handlefunc(",
+    "handle(",
+    "@get",
+    "@post",
+    "@put",
+    "@patch",
+    "@delete",
+    "@app.",
+    "@router.",
+    "@route",
+    "@requestmapping",
+    "@getmapping",
+    "@postmapping",
+    "router.",
+    "route!",
+    "web::resource",
+    "addroute",
+    "register",
+    "endpoint",
+    "path(",
+    "url(",
+    "uri(",
+    "r.get",
+    "r.post",
+    "app.get",
+    "app.post",
 ];
 
 /// Whether a line contains a framework route-registration signal (ASCII-ci).
@@ -309,16 +384,30 @@ fn line_has_route_signal(line: &str) -> bool {
 
 /// Common filesystem-path roots that are never HTTP routes.
 const FS_ROOTS: &[&str] = &[
-    "usr", "etc", "var", "tmp", "bin", "lib", "opt", "home", "dev", "proc",
-    "sys", "mnt", "users", "applications", "library", "private", "volumes",
+    "usr",
+    "etc",
+    "var",
+    "tmp",
+    "bin",
+    "lib",
+    "opt",
+    "home",
+    "dev",
+    "proc",
+    "sys",
+    "mnt",
+    "users",
+    "applications",
+    "library",
+    "private",
+    "volumes",
 ];
 
 /// File extensions that mark a path literal as a filename, not a route.
 const FILE_EXTS: &[&str] = &[
-    "rs", "go", "py", "ts", "js", "c", "h", "cpp", "java", "rb", "txt", "md",
-    "json", "yaml", "yml", "toml", "lock", "dll", "so", "dylib", "exe", "sh",
-    "cfg", "ini", "xml", "html", "css", "png", "jpg", "svg", "csv", "sql",
-    "proto", "pdf", "log", "tmp", "bak", "pem", "key", "crt",
+    "rs", "go", "py", "ts", "js", "c", "h", "cpp", "java", "rb", "txt", "md", "json", "yaml",
+    "yml", "toml", "lock", "dll", "so", "dylib", "exe", "sh", "cfg", "ini", "xml", "html", "css",
+    "png", "jpg", "svg", "csv", "sql", "proto", "pdf", "log", "tmp", "bak", "pem", "key", "crt",
 ];
 
 /// Whether a path *looks* like an HTTP route on its own (used only when there's
@@ -328,12 +417,18 @@ const FILE_EXTS: &[&str] = &[
 /// a known file extension (`/spec.yaml`, `/Restler.dll`). Path params (`:id`,
 /// `{id}`) are allowed.
 fn route_shaped(path: &str) -> bool {
-    let segments: Vec<&str> = path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    let segments: Vec<&str> = path
+        .trim_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
     if segments.is_empty() {
         return false;
     }
     let has_word = segments.iter().any(|s| {
-        let s = s.trim_start_matches(':').trim_matches(|c| c == '{' || c == '}');
+        let s = s
+            .trim_start_matches(':')
+            .trim_matches(|c| c == '{' || c == '}');
         s.len() >= 2 && s.chars().any(|c| c.is_ascii_alphabetic())
     });
     if !has_word {
@@ -382,7 +477,13 @@ fn route_label(route: &str, line: &str, lines: &[&str], idx: usize) -> String {
         let after = &line[pos + route.len()..];
         if let Some(handler) = after
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .find(|t| t.len() >= 3 && t.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false))
+            .find(|t| {
+                t.len() >= 3
+                    && t.chars()
+                        .next()
+                        .map(|c| c.is_ascii_alphabetic())
+                        .unwrap_or(false)
+            })
         {
             push_identifier_words(&mut words, handler);
         }
@@ -390,7 +491,9 @@ fn route_label(route: &str, line: &str, lines: &[&str], idx: usize) -> String {
 
     // 3) Nearest doc comment above (//, ///, #, *), up to 3 lines back.
     for back in 1..=3 {
-        let Some(prev_idx) = idx.checked_sub(back) else { break };
+        let Some(prev_idx) = idx.checked_sub(back) else {
+            break;
+        };
         let prev = lines[prev_idx].trim();
         let comment = prev
             .strip_prefix("///")
@@ -461,7 +564,10 @@ fn push_extracted<'a>(
     line: u32,
     text: &'a str,
 ) {
-    if out.iter().any(|e| e.subject == subject && e.predicate == predicate && e.line == line) {
+    if out
+        .iter()
+        .any(|e| e.subject == subject && e.predicate == predicate && e.line == line)
+    {
         return;
     }
     out.push(Extracted {
@@ -484,19 +590,43 @@ fn push_extracted<'a>(
 /// Keyword stems that mark a constant as *tunable/policy config* — the kind of
 /// thing a person makes a claim about ("the timeout is 30s", "max retries is 5").
 const CONFIG_KEYWORDS: &[&str] = &[
-    "retr", "timeout", "port", "max", "min", "limit", "size", "len", "count",
-    "interval", "threshold", "enable", "disable", "default", "capacity", "buffer",
-    "batch", "window", "ttl", "delay", "backoff", "concurren", "pool", "quota",
-    "rate", "deadline", "expire", "version", "level",
+    "retr",
+    "timeout",
+    "port",
+    "max",
+    "min",
+    "limit",
+    "size",
+    "len",
+    "count",
+    "interval",
+    "threshold",
+    "enable",
+    "disable",
+    "default",
+    "capacity",
+    "buffer",
+    "batch",
+    "window",
+    "ttl",
+    "delay",
+    "backoff",
+    "concurren",
+    "pool",
+    "quota",
+    "rate",
+    "deadline",
+    "expire",
+    "version",
+    "level",
 ];
 
 /// Substrings that mark a constant as a *hardware / register / wiring* artifact —
 /// never a claimable config value (these dominate C codebases like the kernel).
 const HARDWARE_MARKERS: &[&str] = &[
-    "offset", "_ofst", "_off", "addr", "_reg", "register", "irq", "_mask", "_bit",
-    "_shift", "_pin", "gpio", "dma", "_phys", "vaddr", "opcode", "_cmd", "_dev",
-    "vendor", "_id", "magic", "_hz", "mhz", "khz", "_clk", "clock", "voltage",
-    "_mv", "_uv", "_ohm", "errno", "ioctl", "_fd",
+    "offset", "_ofst", "_off", "addr", "_reg", "register", "irq", "_mask", "_bit", "_shift",
+    "_pin", "gpio", "dma", "_phys", "vaddr", "opcode", "_cmd", "_dev", "vendor", "_id", "magic",
+    "_hz", "mhz", "khz", "_clk", "clock", "voltage", "_mv", "_uv", "_ohm", "errno", "ioctl", "_fd",
 ];
 
 /// A strong, unambiguous config suffix: the name *ends* with a tunable word, so
@@ -504,9 +634,22 @@ const HARDWARE_MARKERS: &[&str] = &[
 /// `RX_BUFFER_SIZE`). Distinct from a substring match (`PORT_ENA_RX_SHIFT`).
 fn ends_with_tunable(name: &str) -> bool {
     const TUNABLE_SUFFIXES: &[&str] = &[
-        "_timeout", "_retries", "_retry", "_port", "_max", "_min", "_limit",
-        "_size", "_count", "_interval", "_threshold", "_ttl", "_delay",
-        "_backoff", "_capacity", "_deadline",
+        "_timeout",
+        "_retries",
+        "_retry",
+        "_port",
+        "_max",
+        "_min",
+        "_limit",
+        "_size",
+        "_count",
+        "_interval",
+        "_threshold",
+        "_ttl",
+        "_delay",
+        "_backoff",
+        "_capacity",
+        "_deadline",
     ];
     let lower = name.to_ascii_lowercase();
     TUNABLE_SUFFIXES.iter().any(|s| lower.ends_with(s))
@@ -554,7 +697,9 @@ fn is_constish(name: &str) -> bool {
     if name.len() < 3 {
         return false;
     }
-    let upper_snake = name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    let upper_snake = name
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
         && name.chars().any(|c| c.is_ascii_uppercase());
     // PascalCase / camelCase compound (has a lowercase AND an uppercase).
     let mixed = name.chars().any(|c| c.is_ascii_lowercase())
@@ -610,7 +755,13 @@ fn extract_cargo_deps(contents: &str) -> Vec<Extracted<'_>> {
         if in_deps {
             if let Some(name) = t.split('=').next().map(str::trim) {
                 if !name.is_empty() && !name.starts_with('#') {
-                    out.push(fact(name, "dependency_exists", serde_json::Value::Bool(true), (i + 1) as u32, t));
+                    out.push(fact(
+                        name,
+                        "dependency_exists",
+                        serde_json::Value::Bool(true),
+                        (i + 1) as u32,
+                        t,
+                    ));
                 }
             }
         }
@@ -656,7 +807,13 @@ fn extract_requirements_txt(contents: &str) -> Vec<Extracted<'_>> {
             .unwrap_or("")
             .trim();
         if !name.is_empty() {
-            out.push(fact(name, "dependency_exists", serde_json::Value::Bool(true), (i + 1) as u32, t));
+            out.push(fact(
+                name,
+                "dependency_exists",
+                serde_json::Value::Bool(true),
+                (i + 1) as u32,
+                t,
+            ));
         }
     }
     out
@@ -685,7 +842,13 @@ fn extract_go_mod(contents: &str) -> Vec<Extracted<'_>> {
         if let Some(dl) = dep_line {
             if let Some(name) = dl.split_whitespace().next() {
                 if name != "(" {
-                    out.push(fact(name, "dependency_exists", serde_json::Value::Bool(true), (i + 1) as u32, t));
+                    out.push(fact(
+                        name,
+                        "dependency_exists",
+                        serde_json::Value::Bool(true),
+                        (i + 1) as u32,
+                        t,
+                    ));
                 }
             }
         }
@@ -699,10 +862,14 @@ mod tests {
     use std::path::PathBuf;
 
     fn has_route(facts: &[Extracted], route: &str) -> bool {
-        facts.iter().any(|f| f.subject == route && f.predicate == "route_exists")
+        facts
+            .iter()
+            .any(|f| f.subject == route && f.predicate == "route_exists")
     }
     fn has_dep(facts: &[Extracted], name: &str) -> bool {
-        facts.iter().any(|f| f.subject == name && f.predicate == "dependency_exists")
+        facts
+            .iter()
+            .any(|f| f.subject == name && f.predicate == "dependency_exists")
     }
 
     #[test]
@@ -714,8 +881,12 @@ mod tests {
         "#;
         let f = extract_file(&PathBuf::from("main.rs"), src);
         assert!(has_route(&f, "/v1/checkout"));
-        assert!(f.iter().any(|e| e.predicate == "retry_count" && e.value == serde_json::json!(5)));
-        assert!(f.iter().any(|e| e.predicate == "port" && e.value == serde_json::json!(8080)));
+        assert!(f
+            .iter()
+            .any(|e| e.predicate == "retry_count" && e.value == serde_json::json!(5)));
+        assert!(f
+            .iter()
+            .any(|e| e.predicate == "port" && e.value == serde_json::json!(8080)));
     }
 
     #[test]
@@ -729,8 +900,12 @@ mod tests {
         let f = extract_file(&PathBuf::from("server.ts"), src);
         assert!(has_route(&f, "/v1/checkout"));
         assert!(has_route(&f, "/webhooks/stripe"));
-        assert!(f.iter().any(|e| e.subject == "STRIPE_SECRET" && e.predicate == "env_var_exists"));
-        assert!(f.iter().any(|e| e.subject == "MAX_RETRIES" && e.predicate == "retry_count" && e.value == serde_json::json!(5)));
+        assert!(f
+            .iter()
+            .any(|e| e.subject == "STRIPE_SECRET" && e.predicate == "env_var_exists"));
+        assert!(f.iter().any(|e| e.subject == "MAX_RETRIES"
+            && e.predicate == "retry_count"
+            && e.value == serde_json::json!(5)));
     }
 
     #[test]
@@ -746,9 +921,15 @@ token = os.getenv("API_TOKEN")
 "#;
         let f = extract_file(&PathBuf::from("app.py"), src);
         assert!(has_route(&f, "/v1/checkout"));
-        assert!(f.iter().any(|e| e.subject == "STRIPE_SECRET" && e.predicate == "env_var_exists"));
-        assert!(f.iter().any(|e| e.subject == "API_TOKEN" && e.predicate == "env_var_exists"));
-        assert!(f.iter().any(|e| e.subject == "MAX_RETRIES" && e.predicate == "retry_count" && e.value == serde_json::json!(5)));
+        assert!(f
+            .iter()
+            .any(|e| e.subject == "STRIPE_SECRET" && e.predicate == "env_var_exists"));
+        assert!(f
+            .iter()
+            .any(|e| e.subject == "API_TOKEN" && e.predicate == "env_var_exists"));
+        assert!(f.iter().any(|e| e.subject == "MAX_RETRIES"
+            && e.predicate == "retry_count"
+            && e.value == serde_json::json!(5)));
     }
 
     #[test]
@@ -760,15 +941,22 @@ secret := os.Getenv("STRIPE_SECRET")
 "#;
         let f = extract_file(&PathBuf::from("main.go"), src);
         assert!(has_route(&f, "/v1/checkout"));
-        assert!(f.iter().any(|e| e.subject == "STRIPE_SECRET" && e.predicate == "env_var_exists"));
-        assert!(f.iter().any(|e| e.subject == "MaxRetries" && e.predicate == "retry_count" && e.value == serde_json::json!(5)));
+        assert!(f
+            .iter()
+            .any(|e| e.subject == "STRIPE_SECRET" && e.predicate == "env_var_exists"));
+        assert!(f.iter().any(|e| e.subject == "MaxRetries"
+            && e.predicate == "retry_count"
+            && e.value == serde_json::json!(5)));
     }
 
     #[test]
     fn route_enrichment_builds_human_label() {
         let src = "/// Legacy checkout flow. Deprecated.\nrouter.post(\"/v1/checkout\", handle_checkout);\n";
         let f = extract_file(&PathBuf::from("routes.rs"), src);
-        let route = f.iter().find(|e| e.subject == "/v1/checkout").expect("route");
+        let route = f
+            .iter()
+            .find(|e| e.subject == "/v1/checkout")
+            .expect("route");
         let label = route.label.as_deref().unwrap_or("");
         // Path word + handler words + doc-comment words, humanized.
         assert!(label.contains("checkout"), "label: {label}");
@@ -789,7 +977,14 @@ secret := os.Getenv("STRIPE_SECRET")
         // No signal: derivation paths, file paths, absolute paths → dropped.
         let junk = "let p = \"/0\"; let q = \"/637\"; let f = \"/Users/x/main.py\"; let d = \"/spec.yaml\";";
         let f = extract_file(&PathBuf::from("x.rs"), junk);
-        assert!(!f.iter().any(|e| e.predicate == "route_exists"), "junk routes: {:?}", f.iter().filter(|e| e.predicate=="route_exists").map(|e| e.subject.as_ref()).collect::<Vec<_>>());
+        assert!(
+            !f.iter().any(|e| e.predicate == "route_exists"),
+            "junk routes: {:?}",
+            f.iter()
+                .filter(|e| e.predicate == "route_exists")
+                .map(|e| e.subject.as_ref())
+                .collect::<Vec<_>>()
+        );
 
         // No signal but clearly route-shaped → kept.
         let bare = "const path = \"/api/v1/users\";";
@@ -799,12 +994,17 @@ secret := os.Getenv("STRIPE_SECRET")
 
     #[test]
     fn constant_precision_drops_single_letter_and_enum_tokens() {
-        let f = extract_file(&PathBuf::from("x.rs"), "let A = 1;\nconst ABORTED = 4016;\nconst MAX_RETRIES = 5;\n");
+        let f = extract_file(
+            &PathBuf::from("x.rs"),
+            "let A = 1;\nconst ABORTED = 4016;\nconst MAX_RETRIES = 5;\n",
+        );
         // Single-letter and bare-uppercase enum tokens are dropped...
         assert!(!f.iter().any(|e| e.subject == "A"));
         assert!(!f.iter().any(|e| e.subject == "ABORTED"));
         // ...but a real UPPER_SNAKE config constant survives.
-        assert!(f.iter().any(|e| e.subject == "MAX_RETRIES" && e.value == serde_json::json!(5)));
+        assert!(f
+            .iter()
+            .any(|e| e.subject == "MAX_RETRIES" && e.value == serde_json::json!(5)));
     }
 
     #[test]
@@ -819,15 +1019,25 @@ char *e = getenv("KERNEL_DEBUG");
 "#;
         let f = extract_file(&PathBuf::from("net.c"), src);
         // retry/timeout/port keywords route to canonical predicates...
-        assert!(f.iter().any(|e| e.subject == "MAX_RETRIES" && e.predicate == "retry_count" && e.value == serde_json::json!(5)));
-        assert!(f.iter().any(|e| e.subject == "DMA_TIMEOUT" && e.predicate == "timeout" && e.value == serde_json::json!(3000)));
-        assert!(f.iter().any(|e| e.predicate == "port" && e.value == serde_json::json!(8080)));
-        assert!(f.iter().any(|e| e.predicate == "port" && e.value == serde_json::json!(443)));
+        assert!(f.iter().any(|e| e.subject == "MAX_RETRIES"
+            && e.predicate == "retry_count"
+            && e.value == serde_json::json!(5)));
+        assert!(f.iter().any(|e| e.subject == "DMA_TIMEOUT"
+            && e.predicate == "timeout"
+            && e.value == serde_json::json!(3000)));
+        assert!(f
+            .iter()
+            .any(|e| e.predicate == "port" && e.value == serde_json::json!(8080)));
+        assert!(f
+            .iter()
+            .any(|e| e.predicate == "port" && e.value == serde_json::json!(443)));
         // BUF_MASK is a register/hardware artifact (`_mask`) — filtered out, not
         // a claimable config value. This is the relevance gate in action.
         assert!(!f.iter().any(|e| e.subject == "BUF_MASK"));
         // getenv works in C too.
-        assert!(f.iter().any(|e| e.subject == "KERNEL_DEBUG" && e.predicate == "env_var_exists"));
+        assert!(f
+            .iter()
+            .any(|e| e.subject == "KERNEL_DEBUG" && e.predicate == "env_var_exists"));
     }
 
     #[test]
@@ -836,7 +1046,9 @@ char *e = getenv("KERNEL_DEBUG");
         let src = "#  define   FOO_TIMEOUT  900\n# define BAR (12)\n";
         let f = extract_file(&PathBuf::from("x.h"), src);
         // A timeout keyword routes + survives the relevance gate.
-        assert!(f.iter().any(|e| e.subject == "FOO_TIMEOUT" && e.predicate == "timeout" && e.value == serde_json::json!(900)));
+        assert!(f.iter().any(|e| e.subject == "FOO_TIMEOUT"
+            && e.predicate == "timeout"
+            && e.value == serde_json::json!(900)));
         // `BAR` is a generic name with no config signal — filtered (not claimable).
         assert!(!f.iter().any(|e| e.subject == "BAR"));
     }
@@ -854,33 +1066,73 @@ char *e = getenv("KERNEL_DEBUG");
 ";
         let f = extract_file(&PathBuf::from("drv.c"), src);
         let kept: Vec<&str> = f.iter().map(|e| e.subject.as_ref()).collect();
-        assert!(!kept.contains(&"A10_DERRADDR_OFST"), "offset noise kept: {kept:?}");
-        assert!(!kept.contains(&"A10SR_RESET_USB"), "reset-id noise kept: {kept:?}");
+        assert!(
+            !kept.contains(&"A10_DERRADDR_OFST"),
+            "offset noise kept: {kept:?}"
+        );
+        assert!(
+            !kept.contains(&"A10SR_RESET_USB"),
+            "reset-id noise kept: {kept:?}"
+        );
         assert!(!kept.contains(&"GPIO_IRQ_BASE"), "irq noise kept: {kept:?}");
-        assert!(kept.contains(&"MAX_BATCH_SIZE"), "real config dropped: {kept:?}");
-        assert!(kept.contains(&"WORKER_POOL_LIMIT"), "real config dropped: {kept:?}");
+        assert!(
+            kept.contains(&"MAX_BATCH_SIZE"),
+            "real config dropped: {kept:?}"
+        );
+        assert!(
+            kept.contains(&"WORKER_POOL_LIMIT"),
+            "real config dropped: {kept:?}"
+        );
     }
 
     #[test]
     fn deps_from_each_manifest() {
-        assert!(has_dep(&extract_file(&PathBuf::from("Cargo.toml"), "[dependencies]\nredis = \"0.2\"\n"), "redis"));
         assert!(has_dep(
-            &extract_file(&PathBuf::from("package.json"), r#"{"dependencies":{"express":"4"}}"#),
+            &extract_file(
+                &PathBuf::from("Cargo.toml"),
+                "[dependencies]\nredis = \"0.2\"\n"
+            ),
+            "redis"
+        ));
+        assert!(has_dep(
+            &extract_file(
+                &PathBuf::from("package.json"),
+                r#"{"dependencies":{"express":"4"}}"#
+            ),
             "express"
         ));
-        assert!(has_dep(&extract_file(&PathBuf::from("requirements.txt"), "fastapi==0.110\nredis>=4.0\n"), "fastapi"));
-        assert!(has_dep(&extract_file(&PathBuf::from("requirements.txt"), "fastapi==0.110\nredis>=4.0\n"), "redis"));
+        assert!(has_dep(
+            &extract_file(
+                &PathBuf::from("requirements.txt"),
+                "fastapi==0.110\nredis>=4.0\n"
+            ),
+            "fastapi"
+        ));
+        assert!(has_dep(
+            &extract_file(
+                &PathBuf::from("requirements.txt"),
+                "fastapi==0.110\nredis>=4.0\n"
+            ),
+            "redis"
+        ));
         let gomod = "module x\n\nrequire (\n\tgithub.com/go-redis/redis v8\n)\n";
-        assert!(has_dep(&extract_file(&PathBuf::from("go.mod"), gomod), "github.com/go-redis/redis"));
+        assert!(has_dep(
+            &extract_file(&PathBuf::from("go.mod"), gomod),
+            "github.com/go-redis/redis"
+        ));
     }
 
     #[test]
     fn yaml_and_json_ports() {
         let yaml = "ports:\n  - \"8080:8080\"\n";
         let f = extract_file(&PathBuf::from("docker-compose.yml"), yaml);
-        assert!(f.iter().any(|e| e.predicate == "port" && e.value == serde_json::json!(8080)));
+        assert!(f
+            .iter()
+            .any(|e| e.predicate == "port" && e.value == serde_json::json!(8080)));
         let json = r#"{ "port": 8080 }"#;
         let f2 = extract_file(&PathBuf::from("config.json"), json);
-        assert!(f2.iter().any(|e| e.predicate == "port" && e.value == serde_json::json!(8080)));
+        assert!(f2
+            .iter()
+            .any(|e| e.predicate == "port" && e.value == serde_json::json!(8080)));
     }
 }

@@ -9,7 +9,11 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 fn index(src: &str, mode: ExtractorMode) -> (rusqlite::Connection, PathBuf) {
     // Unique per call so parallel tests never share a directory.
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("truth_ast_it_{}_{:?}_{n}", std::process::id(), mode));
+    let dir = std::env::temp_dir().join(format!(
+        "truth_ast_it_{}_{:?}_{n}",
+        std::process::id(),
+        mode
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src/lib.rs"), src).unwrap();
@@ -47,7 +51,10 @@ async fn checkout() {}
 fn ast_extracts_real_rust_route() {
     let (conn, dir) = index(REAL_ROUTE, ExtractorMode::Ast);
     let r = routes(&conn);
-    assert!(r.iter().any(|(s, m)| s == "/v1/checkout" && m == "ast"), "routes: {r:?}");
+    assert!(
+        r.iter().any(|(s, m)| s == "/v1/checkout" && m == "ast"),
+        "routes: {r:?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -61,7 +68,10 @@ fn test_route() {
 "#;
     let (conn, dir) = index(src, ExtractorMode::Ast);
     let r = routes(&conn);
-    assert!(r.is_empty(), "AST should extract no routes from assert_eq, got: {r:?}");
+    assert!(
+        r.is_empty(),
+        "AST should extract no routes from assert_eq, got: {r:?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -88,7 +98,10 @@ fn regex_mode_unchanged_behavior() {
     // precision gate lets through).
     let (conn, dir) = index(REAL_ROUTE, ExtractorMode::Regex);
     let r = routes(&conn);
-    assert!(r.iter().any(|(s, m)| s == "/v1/checkout" && m == "regex"), "routes: {r:?}");
+    assert!(
+        r.iter().any(|(s, m)| s == "/v1/checkout" && m == "regex"),
+        "routes: {r:?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -100,8 +113,19 @@ fn ast_route_carries_handler_metadata() {
         .into_iter()
         .find(|e| e.subject_text.as_deref() == Some("/v1/checkout"))
         .expect("route evidence");
-    assert_eq!(ev.metadata_json.get("extraction").and_then(|v| v.as_str()), Some("ast"));
-    assert_eq!(ev.metadata_json.get("handler").and_then(|v| v.as_str()), Some("checkout"));
-    assert_eq!(ev.metadata_json.get("route_builder").and_then(|v| v.as_str()), Some("route"));
+    assert_eq!(
+        ev.metadata_json.get("extraction").and_then(|v| v.as_str()),
+        Some("ast")
+    );
+    assert_eq!(
+        ev.metadata_json.get("handler").and_then(|v| v.as_str()),
+        Some("checkout")
+    );
+    assert_eq!(
+        ev.metadata_json
+            .get("route_builder")
+            .and_then(|v| v.as_str()),
+        Some("route")
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

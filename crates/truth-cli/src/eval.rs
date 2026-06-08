@@ -29,7 +29,10 @@ impl Fixture {
                     name: c.id.clone(),
                     question: c.text.clone(),
                     repo: c.repo.clone().or_else(|| cf.defaults.repo.clone()),
-                    local_log: c.local_log.clone().or_else(|| cf.defaults.local_log.clone()),
+                    local_log: c
+                        .local_log
+                        .clone()
+                        .or_else(|| cf.defaults.local_log.clone()),
                     expected_status: expected,
                 })
             })
@@ -45,7 +48,8 @@ pub fn load_fixture(text: &str) -> Result<Fixture> {
     if let Ok(f) = serde_yaml::from_str::<Fixture>(text) {
         return Ok(f);
     }
-    let cf = ClaimFile::from_yaml(text).context("fixture is neither a `cases:` nor `claims:` file")?;
+    let cf =
+        ClaimFile::from_yaml(text).context("fixture is neither a `cases:` nor `claims:` file")?;
     Ok(Fixture::from_claim_file(&cf))
 }
 
@@ -135,7 +139,11 @@ pub fn run_eval(config: &Config, fixture: &Fixture) -> Result<EvalReport> {
         });
     }
 
-    Ok(EvalReport { passed, failed, cases })
+    Ok(EvalReport {
+        passed,
+        failed,
+        cases,
+    })
 }
 
 /// Run all cases and capture their actual outputs as a recorded fixture.
@@ -147,7 +155,13 @@ pub fn record_eval(config: &Config, fixture: &Fixture) -> Result<RecordedFixture
             truth_indexer::index_repo(&conn, &config.repo, Some(Path::new(repo)))
                 .with_context(|| format!("indexing repo for case `{}`", case.name))?;
         }
-        let outcome = run_check(&conn, config, &case.question, Trigger::Cli, case.local_log.as_deref())?;
+        let outcome = run_check(
+            &conn,
+            config,
+            &case.question,
+            Trigger::Cli,
+            case.local_log.as_deref(),
+        )?;
         cases.push(RecordedCase {
             name: case.name.clone(),
             question: case.question.clone(),

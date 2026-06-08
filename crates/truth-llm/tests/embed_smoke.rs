@@ -20,7 +20,12 @@ fn model_path() -> String {
 fn humanized_labels_resolve_pure_semantic_cases() {
     let r = EmbeddingResolver::from_path(&model_path(), 0.1).expect("load embedding model");
     // Human-word descriptions of each route (what enriched concept labels look like).
-    let labels = ["checkout payment order", "user authentication login signin", "service health status", "billing charge payment"];
+    let labels = [
+        "checkout payment order",
+        "user authentication login signin",
+        "service health status",
+        "billing charge payment",
+    ];
     let routes = ["/v1/checkout", "/auth/login", "/health", "/billing/charge"];
     let cands: Vec<Candidate> = labels.iter().map(|s| Candidate::new(*s)).collect();
 
@@ -41,5 +46,8 @@ fn humanized_labels_resolve_pure_semantic_cases() {
         }
     }
     println!("humanized embedding resolver: {hits}/4 pure-semantic cases");
-    assert!(hits >= 3, "expected embeddings to resolve most humanized cases, got {hits}/4");
+    assert!(
+        hits >= 3,
+        "expected embeddings to resolve most humanized cases, got {hits}/4"
+    );
 }

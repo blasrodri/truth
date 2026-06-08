@@ -79,8 +79,16 @@ pub fn build_report(conn: &rusqlite::Connection, file: &str, now: i64) -> Result
     }
     if owners.is_empty() {
         // Fall back to top committers as the ownership signal.
-        for o in owners_report.owners.iter().filter(|o| o.kind == "recent_committer").take(3) {
-            let share = o.share.map(|s| format!(", {:.0}%", s * 100.0)).unwrap_or_default();
+        for o in owners_report
+            .owners
+            .iter()
+            .filter(|o| o.kind == "recent_committer")
+            .take(3)
+        {
+            let share = o
+                .share
+                .map(|s| format!(", {:.0}%", s * 100.0))
+                .unwrap_or_default();
             owners.push(format!("{}{}", o.who, share));
         }
     }
@@ -127,7 +135,9 @@ pub fn build_report(conn: &rusqlite::Connection, file: &str, now: i64) -> Result
     }
 
     if !resolved {
-        notes.push(format!("Could not resolve `{file}` — pass a real path or run `truth index .`."));
+        notes.push(format!(
+            "Could not resolve `{file}` — pass a real path or run `truth index .`."
+        ));
     }
 
     Ok(AskReport {
@@ -165,7 +175,9 @@ fn stem_of(path: &str) -> String {
 
 fn fmt_date(ts: i64) -> Option<String> {
     use chrono::{TimeZone, Utc};
-    Utc.timestamp_opt(ts, 0).single().map(|dt| dt.format("%Y-%m-%d").to_string())
+    Utc.timestamp_opt(ts, 0)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
 }
 
 /// `truth ask <file> [--json]`.
@@ -211,8 +223,14 @@ pub fn ask(file: &str, json: bool) -> Result<()> {
         // bucket it rather than imply precision.
         let s = match n {
             0 => "Referenced elsewhere: none found — likely an entry point or unused.".to_string(),
-            1..=5 => format!("Referenced elsewhere: a few files mention `{}` (~{n}).", stem_of(&report.file)),
-            _ => format!("Referenced elsewhere: widely mentioned (`{}` appears across the codebase).", stem_of(&report.file)),
+            1..=5 => format!(
+                "Referenced elsewhere: a few files mention `{}` (~{n}).",
+                stem_of(&report.file)
+            ),
+            _ => format!(
+                "Referenced elsewhere: widely mentioned (`{}` appears across the codebase).",
+                stem_of(&report.file)
+            ),
         };
         println!("{s}");
     }

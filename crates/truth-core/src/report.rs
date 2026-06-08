@@ -237,7 +237,8 @@ claims:
 
     #[test]
     fn round_trips_to_yaml() {
-        let yaml = "claims:\n  - id: a\n    text: the service runs on port 8080\n    severity: info\n";
+        let yaml =
+            "claims:\n  - id: a\n    text: the service runs on port 8080\n    severity: info\n";
         let cf = ClaimFile::from_yaml(yaml).unwrap();
         let out = cf.to_yaml().unwrap();
         let reparsed = ClaimFile::from_yaml(&out).unwrap();

@@ -40,7 +40,11 @@ impl Ownership {
     pub fn load(root: &Path) -> Self {
         let codeowners = load_codeowners(root);
         let maintainers = load_maintainers(root);
-        Ownership { codeowners, maintainers, root: root.to_path_buf() }
+        Ownership {
+            codeowners,
+            maintainers,
+            root: root.to_path_buf(),
+        }
     }
 
     /// Whether any authoritative ownership file was found.
@@ -56,11 +60,20 @@ impl Ownership {
 
         // CODEOWNERS: last matching rule wins (GitHub semantics).
         if !self.codeowners.is_empty() {
-            if let Some(rule) = self.codeowners.iter().rev().find(|r| glob_match(&r.pattern, &rel_str)) {
+            if let Some(rule) = self
+                .codeowners
+                .iter()
+                .rev()
+                .find(|r| glob_match(&r.pattern, &rel_str))
+            {
                 return rule
                     .owners
                     .iter()
-                    .map(|o| Owner { who: o.clone(), role: "codeowner".into(), source: "CODEOWNERS".into() })
+                    .map(|o| Owner {
+                        who: o.clone(),
+                        role: "codeowner".into(),
+                        source: "CODEOWNERS".into(),
+                    })
                     .collect();
             }
         }
@@ -81,7 +94,11 @@ impl Ownership {
             let mut out: Vec<Owner> = sec
                 .maintainers
                 .iter()
-                .map(|m| Owner { who: m.clone(), role: "maintainer".into(), source: "MAINTAINERS".into() })
+                .map(|m| Owner {
+                    who: m.clone(),
+                    role: "maintainer".into(),
+                    source: "MAINTAINERS".into(),
+                })
                 .collect();
             out.extend(sec.reviewers.iter().map(|r| Owner {
                 who: r.clone(),
@@ -113,10 +130,15 @@ fn parse_codeowners(text: &str) -> Vec<CodeownersRule> {
             continue;
         }
         let mut parts = line.split_whitespace();
-        let Some(pattern) = parts.next() else { continue };
+        let Some(pattern) = parts.next() else {
+            continue;
+        };
         let owners: Vec<String> = parts.map(|s| s.to_string()).collect();
         if !owners.is_empty() {
-            rules.push(CodeownersRule { pattern: pattern.to_string(), owners });
+            rules.push(CodeownersRule {
+                pattern: pattern.to_string(),
+                owners,
+            });
         }
     }
     rules
@@ -134,7 +156,11 @@ fn load_maintainers(root: &Path) -> Vec<MaintainerSection> {
 /// `M:` maintainers, `R:` reviewers, `F:` file patterns.
 fn parse_maintainers(text: &str) -> Vec<MaintainerSection> {
     let mut sections = Vec::new();
-    let mut cur = MaintainerSection { maintainers: vec![], reviewers: vec![], files: vec![] };
+    let mut cur = MaintainerSection {
+        maintainers: vec![],
+        reviewers: vec![],
+        files: vec![],
+    };
     let mut in_section = false;
 
     let flush = |cur: &mut MaintainerSection, out: &mut Vec<MaintainerSection>| {
@@ -145,7 +171,11 @@ fn parse_maintainers(text: &str) -> Vec<MaintainerSection> {
                 files: std::mem::take(&mut cur.files),
             });
         } else {
-            *cur = MaintainerSection { maintainers: vec![], reviewers: vec![], files: vec![] };
+            *cur = MaintainerSection {
+                maintainers: vec![],
+                reviewers: vec![],
+                files: vec![],
+            };
         }
     };
 
@@ -304,10 +334,18 @@ F:\tnet/\n\
         let secs = parse_maintainers(text);
         assert_eq!(secs.len(), 2);
 
-        let own = Ownership { codeowners: vec![], maintainers: secs, root: ".".into() };
+        let own = Ownership {
+            codeowners: vec![],
+            maintainers: secs,
+            root: ".".into(),
+        };
         let o = own.owners_for(Path::new("kernel/sched/core.c"));
-        assert!(o.iter().any(|x| x.who.contains("Ingo Molnar") && x.role == "maintainer"));
-        assert!(o.iter().any(|x| x.who.contains("Ben Segall") && x.role == "reviewer"));
+        assert!(o
+            .iter()
+            .any(|x| x.who.contains("Ingo Molnar") && x.role == "maintainer"));
+        assert!(o
+            .iter()
+            .any(|x| x.who.contains("Ben Segall") && x.role == "reviewer"));
 
         let net = own.owners_for(Path::new("net/ipv4/tcp.c"));
         assert!(net.iter().any(|x| x.who.contains("Jakub")));
@@ -316,7 +354,11 @@ F:\tnet/\n\
     #[test]
     fn codeowners_last_match_wins() {
         let rules = parse_codeowners("* @org/default\n/src/payments/ @org/payments\n");
-        let own = Ownership { codeowners: rules, maintainers: vec![], root: ".".into() };
+        let own = Ownership {
+            codeowners: rules,
+            maintainers: vec![],
+            root: ".".into(),
+        };
         let o = own.owners_for(Path::new("src/payments/charge.rs"));
         assert_eq!(o.first().map(|x| x.who.as_str()), Some("@org/payments"));
         let other = own.owners_for(Path::new("src/other/x.rs"));

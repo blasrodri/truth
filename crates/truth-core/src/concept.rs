@@ -24,12 +24,18 @@ impl Candidate {
     /// Candidate whose match text is the label itself.
     pub fn new(label: impl Into<String>) -> Self {
         let label = label.into();
-        Candidate { search_text: label.clone(), label }
+        Candidate {
+            search_text: label.clone(),
+            label,
+        }
     }
 
     /// Candidate with a distinct human-readable text to match against.
     pub fn with_search_text(label: impl Into<String>, search_text: impl Into<String>) -> Self {
-        Candidate { label: label.into(), search_text: search_text.into() }
+        Candidate {
+            label: label.into(),
+            search_text: search_text.into(),
+        }
     }
 }
 
@@ -47,12 +53,63 @@ pub trait ConceptResolver {
 
 /// Common English + question stopwords that should not influence matching.
 const STOPWORDS: &[&str] = &[
-    "the", "is", "are", "was", "were", "does", "do", "did", "still", "anyone",
-    "anybody", "any", "use", "uses", "used", "using", "to", "of", "in", "on",
-    "for", "and", "or", "we", "you", "it", "this", "that", "these", "those",
-    "a", "an", "be", "been", "has", "have", "had", "with", "by", "at", "as",
-    "our", "my", "your", "their", "there", "here", "no", "not", "nobody",
-    "someone", "something", "really", "actually", "ever", "old", "new",
+    "the",
+    "is",
+    "are",
+    "was",
+    "were",
+    "does",
+    "do",
+    "did",
+    "still",
+    "anyone",
+    "anybody",
+    "any",
+    "use",
+    "uses",
+    "used",
+    "using",
+    "to",
+    "of",
+    "in",
+    "on",
+    "for",
+    "and",
+    "or",
+    "we",
+    "you",
+    "it",
+    "this",
+    "that",
+    "these",
+    "those",
+    "a",
+    "an",
+    "be",
+    "been",
+    "has",
+    "have",
+    "had",
+    "with",
+    "by",
+    "at",
+    "as",
+    "our",
+    "my",
+    "your",
+    "their",
+    "there",
+    "here",
+    "no",
+    "not",
+    "nobody",
+    "someone",
+    "something",
+    "really",
+    "actually",
+    "ever",
+    "old",
+    "new",
 ];
 
 /// Split a string into lowercase alphanumeric word tokens (len ≥ 2), dropping
@@ -99,7 +156,10 @@ const SYNONYMS: &[(&str, &str, f32)] = &[
 impl FuzzyResolver {
     fn score(&self, subject_lower: &str, subject_tokens: &[String], candidate: &str) -> f32 {
         let cand_tokens = tokens(candidate);
-        let inter = subject_tokens.iter().filter(|t| cand_tokens.contains(t)).count() as f32;
+        let inter = subject_tokens
+            .iter()
+            .filter(|t| cand_tokens.contains(t))
+            .count() as f32;
         let union = (subject_tokens.len() + cand_tokens.len()) as f32 - inter;
         let mut score = if union > 0.0 { inter / union } else { 0.0 };
 
@@ -178,7 +238,9 @@ mod tests {
     #[test]
     fn returns_none_below_threshold() {
         let r = FuzzyResolver::default();
-        assert!(r.resolve("completely unrelated gibberish xyz", &routes()).is_none());
+        assert!(r
+            .resolve("completely unrelated gibberish xyz", &routes())
+            .is_none());
     }
 
     #[test]
@@ -206,6 +268,8 @@ mod tests {
         let cands = vec![Candidate::new("/auth/login")];
         let r = FuzzyResolver::default();
         // The question wrapper words are ignored; "login" still matches.
-        assert!(r.resolve("is anyone still using the login", &cands).is_some());
+        assert!(r
+            .resolve("is anyone still using the login", &cands)
+            .is_some());
     }
 }

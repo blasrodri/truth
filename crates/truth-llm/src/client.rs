@@ -58,7 +58,9 @@ impl OpenAiCompatibleExtractor {
     pub fn try_extract(&self, text: &str) -> Option<StructuredClaim> {
         // First attempt requests strict JSON mode (supported by OpenAI/llama.cpp);
         // if the server rejects that field (some don't), retry without it.
-        let content = self.request(text, true).or_else(|| self.request(text, false));
+        let content = self
+            .request(text, true)
+            .or_else(|| self.request(text, false));
         if std::env::var("TRUTH_LLM_DEBUG").is_ok() {
             eprintln!("[llm] {} {} -> {:?}", self.base_url, self.model, content);
         }
@@ -86,7 +88,9 @@ impl OpenAiCompatibleExtractor {
         }
         let resp = req.send_json(body).ok()?;
         let v: serde_json::Value = resp.into_json().ok()?;
-        v["choices"][0]["message"]["content"].as_str().map(String::from)
+        v["choices"][0]["message"]["content"]
+            .as_str()
+            .map(String::from)
     }
 }
 

@@ -1,6 +1,9 @@
 //! `truth` CLI — deterministic engineering claim/evidence checker.
 
-use truth_cli::{ask, baseline, ci, claims, commands, diff, docs, doctor, eval, explain, inspect, owners, refs, report, verify_turn};
+use truth_cli::{
+    ask, baseline, ci, claims, commands, diff, docs, doctor, eval, explain, inspect, owners, refs,
+    report, verify_turn,
+};
 
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
@@ -276,20 +279,30 @@ fn main() -> ExitCode {
 fn run(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Init => commands::init(),
-        Command::Index { path, stats, full, extractor } => {
-            commands::index(&path, stats, full, extractor.as_deref())
-        }
+        Command::Index {
+            path,
+            stats,
+            full,
+            extractor,
+        } => commands::index(&path, stats, full, extractor.as_deref()),
         Command::Doctor { json } => doctor::doctor(json),
-        Command::Inspect { category, source, json } => {
-            inspect::inspect(category.as_deref(), source.as_deref(), json)
-        }
+        Command::Inspect {
+            category,
+            source,
+            json,
+        } => inspect::inspect(category.as_deref(), source.as_deref(), json),
         Command::Baseline { local_log, json } => baseline::baseline(local_log.as_deref(), json),
-        Command::Check { claim, local_log, json } => {
-            commands::check(&claim, local_log.as_deref(), json)
-        }
-        Command::VerifyTurn { message, repo, local_log, json } => {
-            verify_turn::verify_turn(&message, repo.as_deref(), local_log.as_deref(), json)
-        }
+        Command::Check {
+            claim,
+            local_log,
+            json,
+        } => commands::check(&claim, local_log.as_deref(), json),
+        Command::VerifyTurn {
+            message,
+            repo,
+            local_log,
+            json,
+        } => verify_turn::verify_turn(&message, repo.as_deref(), local_log.as_deref(), json),
         Command::Usage {
             subject,
             window,
@@ -297,7 +310,14 @@ fn run(command: Command) -> anyhow::Result<()> {
             service,
             local_log,
             json,
-        } => commands::usage(&subject, window.as_deref(), env.as_deref(), service.as_deref(), local_log.as_deref(), json),
+        } => commands::usage(
+            &subject,
+            window.as_deref(),
+            env.as_deref(),
+            service.as_deref(),
+            local_log.as_deref(),
+            json,
+        ),
         Command::Errors {
             pattern,
             window,
@@ -305,7 +325,14 @@ fn run(command: Command) -> anyhow::Result<()> {
             service,
             local_log,
             json,
-        } => commands::errors(&pattern, window.as_deref(), env.as_deref(), service.as_deref(), local_log.as_deref(), json),
+        } => commands::errors(
+            &pattern,
+            window.as_deref(),
+            env.as_deref(),
+            service.as_deref(),
+            local_log.as_deref(),
+            json,
+        ),
         Command::Latest {
             pattern,
             window,
@@ -313,20 +340,33 @@ fn run(command: Command) -> anyhow::Result<()> {
             service,
             local_log,
             json,
-        } => commands::latest(&pattern, window.as_deref(), env.as_deref(), service.as_deref(), local_log.as_deref(), json),
+        } => commands::latest(
+            &pattern,
+            window.as_deref(),
+            env.as_deref(),
+            service.as_deref(),
+            local_log.as_deref(),
+            json,
+        ),
         Command::Config { key, json } => commands::config(&key, json),
         Command::Owners { subject, json } => owners::owners(&subject, json),
         Command::Ask { file, json } => ask::ask(&file, json),
         Command::Uses { symbol, json } => refs::uses(&symbol, json),
         Command::Docs { subject, json } => docs::docs(&subject, json),
         Command::Explain { check_id, json } => explain::explain(&check_id, json),
-        Command::Eval { fixture, json, record, force } => {
-            eval::eval(&fixture, json, record.as_deref(), force)
-        }
+        Command::Eval {
+            fixture,
+            json,
+            record,
+            force,
+        } => eval::eval(&fixture, json, record.as_deref(), force),
         Command::Claims { paths, out, json } => claims::claims(&paths, out.as_deref(), json),
-        Command::Report { claim_file, local_log, format, out } => {
-            report::report(&claim_file, local_log.as_deref(), &format, out.as_deref())
-        }
+        Command::Report {
+            claim_file,
+            local_log,
+            format,
+            out,
+        } => report::report(&claim_file, local_log.as_deref(), &format, out.as_deref()),
         Command::Diff { old, new, json } => diff::diff(&old, &new, json),
         Command::Ci { .. } => unreachable!("ci handled before run()"),
         Command::Db { cmd } => match cmd {
