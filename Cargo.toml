@@ -9,6 +9,7 @@ members = [
     "crates/truth-git",
     "crates/truth-ast",
     "crates/truth-cli",
+    "crates/truth-mcp",
 ]
 
 [workspace.package]
@@ -43,3 +44,4 @@ truth-logs = { path = "crates/truth-logs" }
 truth-llm = { path = "crates/truth-llm" }
 truth-git = { path = "crates/truth-git" }
 truth-ast = { path = "crates/truth-ast" }
+truth-cli = { path = "crates/truth-cli" }
