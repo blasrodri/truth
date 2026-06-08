@@ -172,7 +172,7 @@ fn print_json(v: &serde_json::Value) {
 }
 
 /// Open the database, failing with a friendly hint if it is missing.
-fn open_db(config: &Config) -> Result<Connection> {
+pub(crate) fn open_db(config: &Config) -> Result<Connection> {
     truth_db::open(&config.database.path)
         .with_context(|| format!("opening database at {} (run `truth init` first?)", config.database.path))
 }
