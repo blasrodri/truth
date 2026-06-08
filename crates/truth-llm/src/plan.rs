@@ -76,6 +76,11 @@ pub fn plan_for(
         ClaimType::RouteExists => {
             queries.push(repo_query(QueryType::RouteExists, subject.clone()));
         }
+        ClaimType::SymbolExists => {
+            // Symbol presence is resolved in the check pipeline via the refs
+            // scan (symbol_status) + the working-tree diff, not a stored query.
+            // No query to plan here.
+        }
         ClaimType::EnvVarExists => {
             queries.push(repo_query(QueryType::EnvVarExists, subject.clone()));
         }

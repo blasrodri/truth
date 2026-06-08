@@ -31,6 +31,10 @@ pub struct VerdictInput<'a> {
     /// definition). `None` if no code scan was run. This is the usage signal for
     /// libraries / code that has no runtime logs.
     pub code_references: Option<usize>,
+    /// For symbol-existence claims: the refs status of the subject in the index
+    /// — `"referenced"` / `"definition_only"` (both ⇒ present) or
+    /// `"unreferenced"` (absent). `None` if no symbol scan was run.
+    pub symbol_status: Option<String>,
 }
 
 /// Authority ordering by question type (spec §13.2). Higher = more authoritative.
@@ -73,9 +77,10 @@ pub fn question_type_for(claim_type: ClaimType) -> QuestionType {
         ClaimType::UsageCount | ClaimType::DependencyUsed => QuestionType::Usage,
         ClaimType::ErrorStillHappening | ClaimType::JobLastSuccess => QuestionType::IncidentStatus,
         ClaimType::LatestOccurrence => QuestionType::CurrentRuntimeState,
-        ClaimType::RouteExists | ClaimType::EnvVarExists | ClaimType::FeatureFlagEnabled => {
-            QuestionType::CurrentImplementation
-        }
+        ClaimType::RouteExists
+        | ClaimType::SymbolExists
+        | ClaimType::EnvVarExists
+        | ClaimType::FeatureFlagEnabled => QuestionType::CurrentImplementation,
         ClaimType::ConfigValue
         | ClaimType::RetryCount
         | ClaimType::TimeoutValue
@@ -102,6 +107,7 @@ pub fn decide(input: &VerdictInput) -> VerdictDecision {
         ClaimType::RouteExists | ClaimType::EnvVarExists | ClaimType::FeatureFlagEnabled => {
             decide_existence(input)
         }
+        ClaimType::SymbolExists => decide_symbol(input),
         ClaimType::ConfigValue
         | ClaimType::RetryCount
         | ClaimType::TimeoutValue
@@ -442,6 +448,83 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
     }
 }
 
+/// True when diff evidence positively asserts the subject was added this turn
+/// (a `from_diff` `route_exists` item with value=true).
+fn diff_says_added(input: &VerdictInput) -> bool {
+    input.items.iter().any(|i| {
+        i.predicate.as_deref() == Some("route_exists")
+            && i.metadata_json.get("from_diff").and_then(|v| v.as_bool()).unwrap_or(false)
+            && i.value_json.as_ref().and_then(|v| v.as_bool()) == Some(true)
+    })
+}
+
+/// Symbol-existence claim ("I added/removed function X", "X exists"). The diff
+/// is authoritative for what changed THIS turn; otherwise the index symbol
+/// status (referenced / definition_only ⇒ present; unreferenced ⇒ absent)
+/// decides. Honors claim polarity (added/exists vs removed/deleted).
+fn decide_symbol(input: &VerdictInput) -> VerdictDecision {
+    use crate::claim::ClaimOperator;
+    let subject = input.claim.subject.as_deref().unwrap_or("the symbol");
+    let claims_absence = input.claim.operator == ClaimOperator::NotExists;
+
+    // Resolve presence: diff wins, then index status.
+    let present: Option<bool> = if diff_says_added(input) {
+        Some(true)
+    } else if diff_says_removed(input) {
+        Some(false)
+    } else {
+        match input.symbol_status.as_deref() {
+            Some("referenced") | Some("definition_only") => Some(true),
+            Some("unreferenced") => Some(false),
+            _ => None,
+        }
+    };
+
+    let present = match present {
+        Some(p) => p,
+        // No diff signal and no symbol scan / not indexed → can't confirm.
+        None => {
+            return inconclusive(
+                &format!("I couldn't find `{subject}` in the working-tree diff or the index."),
+                Some("Run `truth index .` so symbol claims can be checked.".to_string()),
+            )
+        }
+    };
+
+    match (present, claims_absence) {
+        // "I added / X exists" and it is present → Supported.
+        (true, false) => supported_symbol(subject, "is present in the code"),
+        // "I removed X" but it is still present → Contradicted (caught the lie).
+        (true, true) => VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.85,
+            evidence_ids: vec![format!("code:{subject}")],
+            caveats: vec![format!("`{subject}` is still present in the code.")],
+            suggested_action: Some("Claimed removed, but it is still defined.".to_string()),
+        },
+        // "I removed X" and it is gone → Supported.
+        (false, true) => supported_symbol(subject, "is absent from the code"),
+        // "I added / X exists" but it is absent → Contradicted.
+        (false, false) => VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.8,
+            evidence_ids: vec![],
+            caveats: vec![format!("`{subject}` is not present in the working tree or index.")],
+            suggested_action: Some("Claimed present, but it could not be found.".to_string()),
+        },
+    }
+}
+
+fn supported_symbol(subject: &str, why: &str) -> VerdictDecision {
+    VerdictDecision {
+        status: VerdictStatus::Supported,
+        confidence: 0.85,
+        evidence_ids: vec![format!("code:{subject}")],
+        caveats: vec![format!("`{subject}` {why}.")],
+        suggested_action: None,
+    }
+}
+
 /// True when diff evidence positively asserts the subject was removed this turn
 /// (a `from_diff` `route_exists` item with value=false).
 fn diff_says_removed(input: &VerdictInput) -> bool {
@@ -625,6 +708,7 @@ mod tests {
             query_results: &results,
             usage_threshold: 0,
             code_references: None,
+            symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
@@ -640,6 +724,7 @@ mod tests {
             query_results: &[],
             usage_threshold: 0,
             code_references: Some(313),
+            symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }
@@ -654,6 +739,7 @@ mod tests {
             query_results: &[],
             usage_threshold: 0,
             code_references: Some(0),
+            symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
@@ -671,6 +757,7 @@ mod tests {
             query_results: &results,
             usage_threshold: 0,
             code_references: None,
+            symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }
@@ -685,6 +772,7 @@ mod tests {
             query_results: &results,
             usage_threshold: 0,
             code_references: None,
+            symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Inconclusive);
     }
@@ -700,6 +788,7 @@ mod tests {
             query_results: &[],
             usage_threshold: 0,
             code_references: None,
+            symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
@@ -715,6 +804,7 @@ mod tests {
             query_results: &[],
             usage_threshold: 0,
             code_references: None,
+            symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }
@@ -728,6 +818,7 @@ mod tests {
             query_results: &[],
             usage_threshold: 0,
             code_references: None,
+            symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Inconclusive);
     }
@@ -780,6 +871,7 @@ mod tests {
             query_results: &[],
             usage_threshold: 0,
             code_references: None,
+            symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
@@ -794,6 +886,7 @@ mod tests {
             query_results: &[],
             usage_threshold: 0,
             code_references: None,
+            symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }
@@ -809,6 +902,7 @@ mod tests {
             query_results: &[],
             usage_threshold: 0,
             code_references: None,
+            symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }

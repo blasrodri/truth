@@ -20,6 +20,8 @@ struct Re {
     timeout: Regex,
     env_var: Regex,
     named_const: Regex,
+    symbol: Regex,
+    symbol_post: Regex,
 }
 
 fn res() -> &'static Re {
@@ -36,6 +38,20 @@ fn res() -> &'static Re {
         // "DEFAULT_PORT equals 8080". Captures (name, value).
         named_const: Regex::new(
             r"\b([A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+|[A-Z][A-Z0-9_]{2,})\b\s*(?:is|=|==|equals|set to|of)\s*(\d+)",
+        )
+        .unwrap(),
+        // Symbol claim, kind-FIRST: "function validate_token", "struct Foo",
+        // "the parse_legacy helper" → wait, that's name-first; see symbol_post.
+        // This one: KIND then NAME, e.g. "function validate_token".
+        symbol: Regex::new(
+            r"(?i)\b(?:function|func|fn|method|struct|type|class|interface|trait|enum|helper|handler)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?(?:\s*\(\s*\))?",
+        )
+        .unwrap(),
+        // Symbol claim, NAME-first: "validate_token function", "parse_legacy
+        // helper", "handleClick method". Tried only if kind-first didn't match,
+        // so it can't steal a word from "<verb> function <name>".
+        symbol_post: Regex::new(
+            r"(?i)\b`?([A-Za-z_][A-Za-z0-9_]*)`?(?:\s*\(\s*\))?\s+(?:function|func|fn|method|struct|type|class|interface|trait|enum|helper|handler)\b",
         )
         .unwrap(),
     })
@@ -173,6 +189,70 @@ impl ClaimExtractor for RegexExtractor {
                 None,
                 0.84,
             );
+        }
+
+        // Symbol claim: "I added function validate_token", "removed the
+        // parse_legacy helper", "renamed OldClient", "method handleClick()".
+        // Requires a kind-word (function/method/struct/...) so we don't grab
+        // arbitrary nouns. Skips claims with a /path (those are routes).
+        if Self::first_route(text).is_none() {
+            // Reject articles / verbs / filler that are never symbol names.
+            const NOT_SYMBOL: &[&str] = &[
+                "the", "a", "an", "this", "that", "it", "new", "old", "my", "our",
+                "their", "its", "some", "any", "no", "added", "removed", "deleted",
+                "renamed", "created", "dropped", "wired", "made", "is", "was",
+                "exists", "exist", "ex", "still", "present", "called", "named",
+            ];
+            let ok = |m: regex::Match| {
+                let s = m.as_str().to_string();
+                (!NOT_SYMBOL.contains(&s.to_ascii_lowercase().as_str())).then_some(s)
+            };
+            // Try BOTH orders; keep the first that yields a non-stopword name.
+            // (Kind-first "function exists" yields the verb "exists" → rejected →
+            // name-first "existing_helper function" wins.)
+            let name = r
+                .symbol
+                .captures(text)
+                .and_then(|c| c.get(1))
+                .and_then(ok)
+                .or_else(|| r.symbol_post.captures(text).and_then(|c| c.get(1)).and_then(ok));
+            // Guard against vague prose ("refactored the checkout handler to be
+            // cleaner"): only treat this as a checkable symbol claim when there's
+            // a concrete signal — an action/existence verb, or a backticked name.
+            // Otherwise it's commentary, and we refuse rather than guess.
+            let has_symbol_signal = lower.contains("added")
+                || lower.contains("removed")
+                || lower.contains("deleted")
+                || lower.contains("renamed")
+                || lower.contains("created")
+                || lower.contains("dropped")
+                || lower.contains("exist")
+                || lower.contains("defined")
+                || lower.contains('`');
+            {
+                if let Some(name) = name.filter(|_| has_symbol_signal) {
+                    let removed = lower.contains("removed")
+                        || lower.contains("deleted")
+                        || lower.contains("dropped")
+                        || lower.contains("renamed")
+                        || lower.contains("no longer")
+                        || lower.contains("gone");
+                    return StructuredClaim {
+                        is_checkable: true,
+                        claim_type: ClaimType::SymbolExists,
+                        subject: Some(name),
+                        predicate: Some("symbol_exists".into()),
+                        operator: if removed { ClaimOperator::NotExists } else { ClaimOperator::Exists },
+                        value: None,
+                        unit: None,
+                        time_window: Some("recent".into()),
+                        environment: None,
+                        confidence: 0.74,
+                        needs_clarification: false,
+                        clarification_question: None,
+                    };
+                }
+            }
         }
 
         // Named constant value: "MAX_RETRIES is 5", "MaxConns = 10". Keyed by the
@@ -401,6 +481,30 @@ mod tests {
         assert_eq!(g.claim_type, ClaimType::ConfigValue);
         assert_eq!(g.subject.as_deref(), Some("MaxConns"));
         assert_eq!(g.expected_number(), Some(10.0));
+    }
+
+    #[test]
+    fn extracts_symbol_claims_both_word_orders() {
+        // kind-first
+        let a = RegexExtractor.extract("I added function validate_token");
+        assert_eq!(a.claim_type, ClaimType::SymbolExists);
+        assert_eq!(a.subject.as_deref(), Some("validate_token"));
+        // name-first, and "function exists" must NOT capture the verb "exists"
+        let b = RegexExtractor.extract("the existing_helper function exists");
+        assert_eq!(b.claim_type, ClaimType::SymbolExists);
+        assert_eq!(b.subject.as_deref(), Some("existing_helper"));
+        // removal sets NotExists
+        let c = RegexExtractor.extract("I removed the parse_legacy helper");
+        assert_eq!(c.claim_type, ClaimType::SymbolExists);
+        assert_eq!(c.subject.as_deref(), Some("parse_legacy"));
+        assert_eq!(c.operator, ClaimOperator::NotExists);
+    }
+
+    #[test]
+    fn vague_symbol_prose_is_not_a_claim() {
+        // No action/existence verb, no backticks → commentary, must refuse.
+        let c = RegexExtractor.extract("I refactored the checkout handler to be much cleaner");
+        assert!(c.claim_type != ClaimType::SymbolExists);
     }
 
     #[test]

@@ -77,3 +77,13 @@ cases:
     repo: examples/sample-repo
     local_log: examples/sample-logs/api.log
     expected_status: inconclusive
+
+  # ---- (D) symbol-existence claims -------------------------------------
+  # NB: positive/negative symbol verdicts that rely on the working-tree DIFF are
+  # covered by unit tests and live tests, not here — the eval harness diffs the
+  # config repo root, not the case repo, so a symbol name placed in this file
+  # would leak into that diff. This case needs no diff: vague prose must refuse.
+  - name: D2 agent vaguely praises a symbol (must refuse)
+    question: I refactored the checkout handler to be much cleaner
+    repo: examples/sample-repo
+    expected_status: inconclusive

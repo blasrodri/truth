@@ -13,6 +13,9 @@ pub enum ClaimType {
     ErrorStillHappening,
     LatestOccurrence,
     RouteExists,
+    /// A code symbol (function/method/struct/type/helper) exists or was
+    /// added/removed/renamed.
+    SymbolExists,
     ConfigValue,
     EnvVarExists,
     DependencyUsed,

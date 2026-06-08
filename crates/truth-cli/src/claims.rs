@@ -131,6 +131,7 @@ fn slug_for(c: &Candidate) -> String {
         ClaimType::UsageCount => "usage",
         ClaimType::ErrorStillHappening => "error",
         ClaimType::RouteExists => "route",
+        ClaimType::SymbolExists => "symbol",
         ClaimType::ConfigValue => "config",
         ClaimType::EnvVarExists => "env",
         ClaimType::DependencyUsed => "dependency",

@@ -139,12 +139,34 @@ pub fn run_check(
         }
     }
 
+    // Symbol-existence evidence: for "I added/removed function X" claims, the
+    // index symbol status (referenced / definition_only / unreferenced) tells us
+    // whether the symbol is present. The diff (below) overrides for this-turn
+    // changes.
+    let mut symbol_status: Option<String> = None;
+    if matches!(claim.claim_type, truth_core::claim::ClaimType::SymbolExists) {
+        if let Some(subject) = claim.subject.as_deref() {
+            let report = crate::refs::build_report(conn, subject)?;
+            if report.files_scanned > 0 {
+                symbol_status = Some(report.status.clone());
+                evidence_lines.push(match report.status.as_str() {
+                    "referenced" => format!("code: `{subject}` is defined/referenced ({} hit(s))", report.count),
+                    "definition_only" => format!("code: `{subject}` is defined (no other references)"),
+                    _ => format!("code: `{subject}` not found in the indexed code"),
+                });
+            }
+        }
+    }
+
     // Diff evidence: for existence claims, "did THIS working tree add/remove the
     // subject?" is the freshest, most direct signal — it answers "I added /x" /
     // "I removed /x" before any re-index. Ranked ABOVE the index by prepending,
     // and it short-circuits to Untouched (no item) on a clean tree, so repos
     // with no diff fall through to the index unchanged.
-    if matches!(claim.claim_type, truth_core::claim::ClaimType::RouteExists) {
+    if matches!(
+        claim.claim_type,
+        truth_core::claim::ClaimType::RouteExists | truth_core::claim::ClaimType::SymbolExists
+    ) {
         if let Some(subject) = claim.subject.as_deref() {
             let fact = crate::diff_facts::scan(&config.repo.root, subject)?;
             if let Some(item) = fact.as_existence_item() {
@@ -172,6 +194,7 @@ pub fn run_check(
         query_results: &query_results,
         usage_threshold: 0,
         code_references,
+        symbol_status,
     });
     // Surface the concept interpretation so the user can confirm it (conservative
     // UX — we never silently substitute a different subject).
