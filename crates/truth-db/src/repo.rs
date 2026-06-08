@@ -281,10 +281,12 @@ pub fn evidence_by_subject(conn: &Connection, subject: &str) -> Result<Vec<Evide
 
 /// All evidence items with a given predicate (e.g. "port", "retry_count").
 pub fn evidence_by_predicate(conn: &Connection, predicate: &str) -> Result<Vec<EvidenceItem>> {
+    // Case-insensitive: the indexer normalizes constant keys (e.g. Go-style
+    // `MaxConns` → `MAXCONNS`) but a claim's predicate arrives in source case.
     let mut stmt = conn.prepare(
         "SELECT id, span_id, evidence_type, subject_text, subject_concept_id, predicate, object_text,
                 value_json, unit, confidence, authority, valid_from, valid_to, extraction_method, metadata_json
-         FROM evidence_items WHERE predicate = ?1",
+         FROM evidence_items WHERE predicate = ?1 COLLATE NOCASE",
     )?;
     let rows = stmt
         .query_map([predicate], row_to_evidence)?

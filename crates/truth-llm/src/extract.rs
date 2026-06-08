@@ -19,6 +19,7 @@ struct Re {
     retry: Regex,
     timeout: Regex,
     env_var: Regex,
+    named_const: Regex,
 }
 
 fn res() -> &'static Re {
@@ -26,10 +27,17 @@ fn res() -> &'static Re {
     R.get_or_init(|| Re {
         // A path-like token: /foo, /v1/checkout, /a/b-c
         route: Regex::new(r"(/[A-Za-z0-9_][A-Za-z0-9_/\-.]*)").unwrap(),
-        port: Regex::new(r"(?i)port\s+(\d{2,5})").unwrap(),
+        // "port 8080", "port is 8080", "port = 8080", "port: 8080".
+        port: Regex::new(r"(?i)port\s*(?:is|=|:|of)?\s*(\d{2,5})").unwrap(),
         retry: Regex::new(r"(?i)retr(?:y|ies|ying)[^0-9]{0,20}(\d+)").unwrap(),
         timeout: Regex::new(r"(?i)timeout[^0-9]{0,20}(\d+)").unwrap(),
         env_var: Regex::new(r"\b([A-Z][A-Z0-9_]{2,})\b").unwrap(),
+        // A named constant claim: "MAX_RETRIES is 5", "MaxConns = 10",
+        // "DEFAULT_PORT equals 8080". Captures (name, value).
+        named_const: Regex::new(
+            r"\b([A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+|[A-Z][A-Z0-9_]{2,})\b\s*(?:is|=|==|equals|set to|of)\s*(\d+)",
+        )
+        .unwrap(),
     })
 }
 
@@ -165,6 +173,33 @@ impl ClaimExtractor for RegexExtractor {
                 None,
                 0.84,
             );
+        }
+
+        // Named constant value: "MAX_RETRIES is 5", "MaxConns = 10". Keyed by the
+        // constant's own name so it resolves against the indexed constant. Runs
+        // after the specific port/retry/timeout handlers so those win their
+        // dedicated phrasings. Skips a leading /path so route claims aren't eaten.
+        if Self::first_route(text).is_none() {
+            if let Some(c) = r.named_const.captures(text) {
+                let name = c[1].to_string();
+                let n: i64 = c[2].parse().unwrap_or_default();
+                // Subject and predicate are both the constant's own name so it
+                // resolves against the indexed constant (keyed by name).
+                return StructuredClaim {
+                    is_checkable: true,
+                    claim_type: ClaimType::ConfigValue,
+                    subject: Some(name.clone()),
+                    predicate: Some(name),
+                    operator: ClaimOperator::Equals,
+                    value: Some(n.into()),
+                    unit: None,
+                    time_window: Some("recent".into()),
+                    environment: None,
+                    confidence: 0.8,
+                    needs_clarification: false,
+                    clarification_question: None,
+                };
+            }
         }
 
         // Route existence: positive ("the /x route exists", "/x is still
@@ -340,6 +375,40 @@ mod tests {
         let c = RegexExtractor.extract("The service runs on port 8080.");
         assert_eq!(c.claim_type, ClaimType::ConfigValue);
         assert_eq!(c.expected_number(), Some(8080.0));
+    }
+
+    #[test]
+    fn extracts_port_with_is_phrasing() {
+        // "port is 8080" / "port = 8080" must parse, not just "port 8080".
+        for s in ["the port is 8080", "port = 8080", "it binds port: 9090"] {
+            let c = RegexExtractor.extract(s);
+            assert_eq!(c.claim_type, ClaimType::ConfigValue, "{s}");
+            assert!(c.expected_number().is_some(), "{s}");
+        }
+    }
+
+    #[test]
+    fn extracts_named_constant() {
+        // UPPER_SNAKE and Go-style CamelCase constants, "is"/"="/"set to".
+        // (Names containing retry/timeout are claimed by those dedicated
+        // handlers first — by design — so use neutral names here.)
+        let c = RegexExtractor.extract("MAX_BATCH_SIZE is 16");
+        assert_eq!(c.claim_type, ClaimType::ConfigValue);
+        assert_eq!(c.subject.as_deref(), Some("MAX_BATCH_SIZE"));
+        assert_eq!(c.expected_number(), Some(16.0));
+
+        let g = RegexExtractor.extract("MaxConns = 10");
+        assert_eq!(g.claim_type, ClaimType::ConfigValue);
+        assert_eq!(g.subject.as_deref(), Some("MaxConns"));
+        assert_eq!(g.expected_number(), Some(10.0));
+    }
+
+    #[test]
+    fn extracts_dependency_name_not_cue_word() {
+        // "the project uses serde" must yield `serde`, not `uses`/`project`.
+        let c = RegexExtractor.extract("the project uses serde");
+        assert_eq!(c.claim_type, ClaimType::DependencyUsed);
+        assert_eq!(c.subject.as_deref(), Some("serde"));
     }
 
     #[test]
