@@ -33,11 +33,21 @@ the machine. No LLM, network, or account is required.
 
 ## Install
 
+**Prebuilt binaries** (no Rust toolchain needed) — grab the tarball for your
+platform from the [latest release](https://github.com/blasrodri/truth/releases/latest)
+(macOS arm64/x64, Linux x64/arm64), then:
+
+```bash
+tar -xzf truth-*.tar.gz
+install truth-*/truth truth-*/truth-mcp /usr/local/bin/
+```
+
+**Or build from source:**
+
 ```bash
 cargo build --release --workspace
-# binaries: target/release/truth  and  target/release/truth-mcp
-# put them on your PATH, e.g.:
 install target/release/truth target/release/truth-mcp /usr/local/bin/
+# binaries: truth (CLI) and truth-mcp (the MCP server)
 ```
 
 ## Use it from your coding agent (MCP)
@@ -120,11 +130,12 @@ process working directory). `--json` emits stable machine-readable output.
 
 ## What it can and cannot check
 
-**Checks (state claims):** route added/removed/exists, config value, retry
-count, timeout value, env var present, dependency used, version required, usage
-count, error-still-happening, job-last-success, feature-flag enabled — against
-**code + git diff + logs**, with the diff outranking a possibly-stale index for
-"I just changed X" claims.
+**Checks (state claims):** route added/removed/exists, **function/symbol
+added/removed/exists**, config value, named constant, retry count, timeout
+value, env var present, dependency used, version required, usage count,
+error-still-happening, job-last-success, feature-flag enabled — across
+**Rust / TypeScript / Python / Go** — against **code + git diff + logs**, with
+the diff outranking a possibly-stale index for "I just changed X" claims.
 
 **Refuses (by design):** action claims (*"I ran the tests"* — no evidence
 source for *I ran*), and judgment claims (*"this is cleaner / faster"* — no
