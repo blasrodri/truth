@@ -1,0 +1,67 @@
+# Extractor robustness corpus.
+#
+# Same handful of ground-truth facts from examples/sample-repo, phrased MANY
+# different ways. This is the instrument for measuring claim-extraction quality:
+# a regex change (or a switch to LLM/AST extraction) that improves things will
+# move the pass rate UP here without breaking the conservative bands.
+#
+# Ground truth (examples/sample-repo):
+#   MAX_RETRIES = 5, PAYMENT_RETRY_COUNT = 5, REQUEST_TIMEOUT = 30, port = 8080,
+#   /v1/checkout exists (POST + GET). No /v1/refund, no nonexistent symbols.
+#
+# Bands:
+#   T* = TRUE state claims        -> supported
+#   F* = FALSE state claims (lies) -> contradicted
+#   R* = vague/action/judgment    -> inconclusive  (must REFUSE, never guess)
+#
+# A claim that the extractor can't parse becomes `inconclusive`. So a T* case
+# that comes back inconclusive = a RECALL miss (extractor too weak). An F* case
+# that comes back supported = a dangerous FALSE PASS. An R* case that comes back
+# supported/contradicted = a hallucinated verdict. All three are visible here.
+cases:
+  # ---- TRUE: retry count, many phrasings -----------------------------------
+  - { name: T01-retry-plain, question: "MAX_RETRIES is 5", repo: examples/sample-repo, expected_status: supported }
+  - { name: T02-retry-set, question: "I set MAX_RETRIES to 5", repo: examples/sample-repo, expected_status: supported }
+  - { name: T03-retry-eq, question: "MAX_RETRIES = 5", repo: examples/sample-repo, expected_status: supported }
+  - { name: T04-retry-equals-word, question: "MAX_RETRIES equals 5", repo: examples/sample-repo, expected_status: supported }
+  - { name: T05-retry-payments, question: "we retry payments 5 times", repo: examples/sample-repo, expected_status: supported }
+
+  # ---- TRUE: timeout -------------------------------------------------------
+  - { name: T06-timeout-plain, question: "the request timeout is 30 seconds", repo: examples/sample-repo, expected_status: supported }
+  - { name: T07-timeout-set, question: "I set the timeout to 30", repo: examples/sample-repo, expected_status: supported }
+  - { name: T08-timeout-const, question: "REQUEST_TIMEOUT is 30", repo: examples/sample-repo, expected_status: supported }
+
+  # ---- TRUE: port ----------------------------------------------------------
+  - { name: T09-port-on, question: "the service runs on port 8080", repo: examples/sample-repo, expected_status: supported }
+  - { name: T10-port-is, question: "the port is 8080", repo: examples/sample-repo, expected_status: supported }
+  - { name: T11-port-bind, question: "it binds port 8080", repo: examples/sample-repo, expected_status: supported }
+
+  # ---- TRUE: route existence ----------------------------------------------
+  - { name: T12-route-exists, question: "the /v1/checkout route exists", repo: examples/sample-repo, expected_status: supported }
+  - { name: T13-route-registered, question: "the /v1/checkout endpoint is still registered", repo: examples/sample-repo, expected_status: supported }
+  - { name: T14-route-wired, question: "/v1/checkout is still wired up", repo: examples/sample-repo, expected_status: supported }
+
+  # ---- FALSE: lies the verifier must catch --------------------------------
+  - { name: F01-retry-wrong, question: "I changed MAX_RETRIES to 3", repo: examples/sample-repo, expected_status: contradicted }
+  - { name: F02-retry-wrong2, question: "we retry payments 10 times", repo: examples/sample-repo, expected_status: contradicted }
+  - { name: F03-timeout-wrong, question: "I lowered the timeout to 10 seconds", repo: examples/sample-repo, expected_status: contradicted }
+  - { name: F04-port-wrong, question: "the service listens on port 9090", repo: examples/sample-repo, expected_status: contradicted }
+  - { name: F05-port-wrong2, question: "the port is 3000", repo: examples/sample-repo, expected_status: contradicted }
+
+  # ---- REFUSE: action / judgment / unverifiable ---------------------------
+  - { name: R01-tests, question: "I ran the tests and they all pass", repo: examples/sample-repo, expected_status: inconclusive }
+  - { name: R02-cleaner, question: "I refactored the checkout handler to be much cleaner", repo: examples/sample-repo, expected_status: inconclusive }
+  - { name: R03-faster, question: "this change makes checkout significantly faster", repo: examples/sample-repo, expected_status: inconclusive }
+  - { name: R04-better, question: "the error handling is more robust now", repo: examples/sample-repo, expected_status: inconclusive }
+  - { name: R05-opinion, question: "I think the architecture is solid", repo: examples/sample-repo, expected_status: inconclusive }
+
+  # ---- HARD: edge phrasings that probe the extractor ceiling ---------------
+  # These are TRUE claims phrased in ways the regex may NOT catch yet. A failure
+  # here (got inconclusive) is a RECALL gap — the honest map of what to improve,
+  # and exactly what an LLM/agent-claims extractor would fix.
+  - { name: H01-retry-prose, question: "payments are retried five times before giving up", repo: examples/sample-repo, expected_status: supported }
+  - { name: H02-retry-upto, question: "we attempt the payment up to 5 times", repo: examples/sample-repo, expected_status: supported }
+  - { name: H03-timeout-after, question: "requests time out after 30s", repo: examples/sample-repo, expected_status: supported }
+  - { name: H04-port-listening, question: "the server is listening on 8080", repo: examples/sample-repo, expected_status: supported }
+  - { name: H05-route-handle, question: "we handle POST /v1/checkout", repo: examples/sample-repo, expected_status: supported }
+  - { name: H06-route-have, question: "there is a checkout endpoint at /v1/checkout", repo: examples/sample-repo, expected_status: supported }

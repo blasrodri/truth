@@ -191,3 +191,20 @@ git-diff adapter, the verdict rules and golden fixtures, claim segmentation,
 index-freshness warnings, JSON output, and end-to-end checks over the sample
 repo. `truth eval fixtures/eval/agent_claims.yaml` is the agent-fact-checking
 quality harness.
+
+### Measuring extraction quality
+
+`fixtures/eval/extractor_corpus.yaml` is a **diagnostic corpus**, not a gate: the
+same ground-truth facts phrased many ways, including hard `H*` edge cases the
+regex extractor is *expected* to miss. Run it to measure where claim extraction
+stands and what a better extractor (agent-supplied `claims`, a local LLM, or
+AST) would improve:
+
+```bash
+truth eval fixtures/eval/extractor_corpus.yaml
+```
+
+A `T*`/`H*` case that returns `inconclusive` is a **recall gap** (extractor too
+weak); an `F*` case that returns `supported` is a dangerous **false pass**; an
+`R*` case that returns a verdict is a **hallucination**. The bands make all
+three visible, so changes can be measured instead of guessed.
