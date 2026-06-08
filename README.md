@@ -89,12 +89,13 @@ It returns the verdict table as text plus `structuredContent` (the JSON below),
 including an `index` block reporting whether the index is empty or stale — so a
 "clean" result is never trusted blindly.
 
-> **One-time per repo:** `truth` verifies code-existence/usage/config claims
-> against an **index**. Run `truth init && truth index .` in a repo once (and
-> re-run `truth index .` after large changes) so those claims can be checked.
-> Claims about the **working-tree diff** ("I added/removed X") work with no
-> index. If the index is missing or stale, `verify_turn` says so loudly instead
-> of silently passing.
+> **One-time per repo:** run `truth init` once to create the `.truth/` store.
+> After that, `verify_turn` **auto-refreshes the index** on every call —
+> incrementally, skipping unchanged files (~10–50 ms), so code-existence /
+> usage / config claims always reflect the current working tree. You never have
+> to re-run `truth index` by hand. Claims about the **working-tree diff**
+> ("I added/removed X") need no index at all. If the index still ends up empty
+> (e.g. nothing indexable), `verify_turn` says so loudly instead of passing.
 
 ## Use it yourself (CLI)
 

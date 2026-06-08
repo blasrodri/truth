@@ -40,6 +40,9 @@ pub struct Freshness {
     pub last_indexed_at: Option<i64>,
     /// Age of the index in seconds at check time, if known.
     pub age_secs: Option<i64>,
+    /// Whether verify auto-refreshed the index (incremental) before checking,
+    /// so index-backed claims reflect the current working tree.
+    pub auto_indexed: bool,
 }
 
 impl Freshness {
@@ -119,6 +122,7 @@ impl TurnReport {
                 "artifacts": self.freshness.artifacts,
                 "empty": self.freshness.is_empty(),
                 "stale": self.freshness.is_stale(),
+                "auto_indexed": self.freshness.auto_indexed,
                 "last_indexed_at": self.freshness.last_indexed_at,
                 "age_secs": self.freshness.age_secs,
                 "warning": self.freshness.warning(),
@@ -228,8 +232,26 @@ pub fn verify(
     message: &str,
     local_log: Option<&str>,
 ) -> Result<TurnReport> {
-    // Capture index freshness FIRST so the report can flag a stale/empty store
-    // — a verifier that silently checks against no data must not look "clean".
+    // Auto-refresh the index before checking. The agent calling this has no idea
+    // it needs to run `truth index` first, and shouldn't — a verifier must keep
+    // its own data current. The incremental pass skips unchanged files (one
+    // parallel hash pass, ~10-50ms on a clean repo), so this is nearly free and
+    // means index-backed claims ("X is unused", "MAX_RETRIES is 5") reflect the
+    // CURRENT working tree, not a stale snapshot. Best-effort: if it fails
+    // (e.g. the path isn't indexable here), we fall through and the freshness
+    // warning still fires.
+    let auto_indexed = truth_indexer::index_repo_opts(
+        conn,
+        &config.repo,
+        Some(std::path::Path::new(&config.repo.root)),
+        true, // incremental
+        config.indexer.extractor,
+    )
+    .is_ok();
+
+    // Capture index freshness AFTER the refresh so the report reflects current
+    // state — a verifier that silently checks against no data must not look
+    // "clean".
     let status = truth_db::repo::index_status(conn)?;
     let age_secs = status
         .last_indexed_at
@@ -239,6 +261,7 @@ pub fn verify(
         artifacts: status.artifacts,
         last_indexed_at: status.last_indexed_at,
         age_secs,
+        auto_indexed,
     };
 
     let mut verdicts = Vec::new();
@@ -363,6 +386,7 @@ mod tests {
             artifacts: 0,
             last_indexed_at: Some(100),
             age_secs: Some(10),
+            auto_indexed: true,
         };
         assert!(empty.is_empty());
         assert!(empty.warning().unwrap().contains("EMPTY"));
@@ -372,6 +396,7 @@ mod tests {
             artifacts: 5,
             last_indexed_at: Some(0),
             age_secs: Some(3 * 86_400),
+            auto_indexed: true,
         };
         assert!(stale.is_stale());
         assert!(stale.warning().unwrap().contains("old"));
@@ -381,6 +406,7 @@ mod tests {
             artifacts: 5,
             last_indexed_at: Some(0),
             age_secs: Some(60),
+            auto_indexed: true,
         };
         assert!(fresh.warning().is_none());
     }
