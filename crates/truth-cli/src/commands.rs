@@ -22,10 +22,52 @@ pub fn init() -> Result<()> {
         println!("Wrote truth.toml");
     }
 
+    // The index DB and config are local runtime state — never commit them.
+    // Auto-ignore so users don't accidentally check in `.truth/` (a real
+    // footgun: the SQLite store can be large and is machine-specific).
+    if let Some(added) = ensure_gitignored(&[".truth/", "truth.toml"])? {
+        println!("Added to .gitignore: {}", added.join(", "));
+    }
+
     let config = load_config()?;
     let _conn = truth_db::open(&config.database.path)?;
     println!("Initialized database at {}", config.database.path);
     Ok(())
+}
+
+/// Ensure each pattern is present in `./.gitignore`, creating the file if
+/// needed. Idempotent — only appends patterns not already covered. Returns the
+/// patterns actually added (empty `None` if the file/entries already had them).
+fn ensure_gitignored(patterns: &[&str]) -> Result<Option<Vec<String>>> {
+    let path = Path::new(".gitignore");
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let present: std::collections::HashSet<&str> = existing.lines().map(|l| l.trim()).collect();
+
+    let to_add: Vec<String> = patterns
+        .iter()
+        .filter(|p| {
+            // Treat "foo/" and "foo" as equivalent for the presence check.
+            let bare = p.trim_end_matches('/');
+            !present.contains(**p) && !present.contains(bare)
+        })
+        .map(|p| p.to_string())
+        .collect();
+
+    if to_add.is_empty() {
+        return Ok(None);
+    }
+
+    let mut out = existing;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("\n# truth — local index/config (machine-specific, do not commit)\n");
+    for p in &to_add {
+        out.push_str(p);
+        out.push('\n');
+    }
+    std::fs::write(path, out).context("writing .gitignore")?;
+    Ok(Some(to_add))
 }
 
 /// `truth serve` — informational placeholder (exits zero).
