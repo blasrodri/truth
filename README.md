@@ -47,6 +47,10 @@ server (stdio JSON-RPC). It exposes one tool, **`verify_turn`**, that an agent
 calls on **its own** message before telling you a change is done — so the agent
 catches and corrects its own lies first.
 
+The repo ships a [`server.json`](server.json) (MCP registry manifest) and a
+[`.mcp.json`](.mcp.json), so cloning it auto-registers the server in MCP-aware
+clients (subject to their approval prompt).
+
 ### Claude Code
 
 ```bash

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "truth": {
+      "command": "truth-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.blasrodri/truth",
+  "title": "truth — agent fact-checker",
+  "version": "0.1.0",
+  "description": "Deterministic fact-checker for AI coding agents. Verifies an agent's claims about its own work (routes/functions/config/deps added, removed, or changed) against the real code, the working-tree git diff, and logs. Returns cited Supported/Contradicted/Refused verdicts; refuses to bluff. Runs locally — code never leaves the machine.",
+  "websiteUrl": "https://github.com/blasrodri/truth",
+  "repository": {
+    "url": "https://github.com/blasrodri/truth",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "truth-mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
