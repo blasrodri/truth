@@ -1,0 +1,4 @@
+target/
+.truth/
+*.sqlite
+.git/
