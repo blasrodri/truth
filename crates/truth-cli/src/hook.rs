@@ -138,13 +138,8 @@ fn config_for(event: &Value) -> Option<Config> {
         .and_then(|v| v.as_str())
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())?;
-    let root = discover_root_from(&cwd).or_else(|| {
-        if auto_enabled() {
-            git_root(&cwd)
-        } else {
-            None
-        }
-    })?;
+    let root =
+        discover_root_from(&cwd).or_else(|| if auto_enabled() { git_root(&cwd) } else { None })?;
     let toml = root.join("truth.toml");
     let mut config = if toml.is_file() {
         Config::load(&toml).ok()?
@@ -199,8 +194,7 @@ pub fn auto(mode: &str) -> Result<()> {
             Ok(())
         }
         "on" | "off" => {
-            let path = global_config_path()
-                .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+            let path = global_config_path().ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }

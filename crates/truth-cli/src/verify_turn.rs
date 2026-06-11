@@ -218,7 +218,7 @@ fn is_plausible_claim(s: &str) -> bool {
     let words = s.split_whitespace().count();
     // A single token ("+4", "done", "8080") is never a self-contained claim —
     // comma-segmented prose produces these constantly.
-    if words < 2 || words > 40 {
+    if !(2..=40).contains(&words) {
         return false;
     }
     if words >= 3 {

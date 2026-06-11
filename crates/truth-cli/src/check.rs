@@ -750,13 +750,15 @@ fn downgrade_inferred_contradiction(
 /// whatever route it vaguely resembles.
 fn has_usage_signal(question: &str) -> bool {
     let lower = question.to_ascii_lowercase();
-    ["use", "uses", "used", "using", "unused", "traffic", "calls", "called", "hits"]
-        .iter()
-        .any(|w| {
-            lower
-                .split(|c: char| !c.is_ascii_alphanumeric())
-                .any(|t| t == *w)
-        })
+    [
+        "use", "uses", "used", "using", "unused", "traffic", "calls", "called", "hits",
+    ]
+    .iter()
+    .any(|w| {
+        lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|t| t == *w)
+    })
 }
 
 /// Whether a claim lacks a concrete subject we can act on, so concept resolution
@@ -955,7 +957,9 @@ mod tests {
         // Conversational prose must NOT be re-typed into a usage claim. These
         // exact sentences fuzzy-matched indexed routes ("hooks" →
         // /webhooks/stripe) and produced false contradictions in dogfooding.
-        assert!(!has_usage_signal("One note: hooks are read at session start"));
+        assert!(!has_usage_signal(
+            "One note: hooks are read at session start"
+        ));
         assert!(!has_usage_signal(
             "the legacy `index_repo` wrapper follows the default too"
         ));
@@ -976,10 +980,7 @@ mod tests {
             suggested_action: Some("...".into()),
         };
         let down = downgrade_inferred_contradiction(d, Some("/v1/checkout"));
-        assert_eq!(
-            down.status,
-            truth_core::enums::VerdictStatus::Inconclusive
-        );
+        assert_eq!(down.status, truth_core::enums::VerdictStatus::Inconclusive);
         assert!(down.caveats.iter().any(|c| c.contains("inferred")));
         // Evidence is preserved so the user can re-ask with the literal subject.
         assert!(!down.evidence_ids.is_empty());

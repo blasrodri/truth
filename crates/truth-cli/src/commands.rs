@@ -95,7 +95,10 @@ fn register_mcp_with_claude() {
     let manual = || {
         println!("MCP: register manually with `claude mcp add --scope user truth -- truth-mcp` (or your client's mcpServers config).")
     };
-    match Command::new("claude").args(["mcp", "get", "truth"]).output() {
+    match Command::new("claude")
+        .args(["mcp", "get", "truth"])
+        .output()
+    {
         Ok(o) if o.status.success() => {
             println!("MCP: `truth` is already registered with Claude Code.");
         }
