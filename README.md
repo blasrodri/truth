@@ -6,6 +6,10 @@ When an agent says *"I added the `/v1/refund` route, set `MAX_RETRIES` to 5, onl
 
 It is not a chatbot and it does not decide truth with a model. A language model only parses the agent's sentence into a structured claim; a fixed-rule engine decides the verdict from retrieved evidence. **The agent cannot talk it into a different answer.**
 
+![truth catching an agent's lies](assets/demo.gif)
+
+<sub>Reproducible: `bash examples/demo.sh` (recorded with asciinema + agg).</sub>
+
 ```
 $ truth verify-turn "I added the /v1/refund endpoint, set MAX_RETRIES to 3, I only changed src/api.rs, and tests pass"
 
