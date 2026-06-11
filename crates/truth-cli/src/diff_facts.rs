@@ -106,6 +106,158 @@ impl DiffFact {
     }
 }
 
+/// One file's change in the working-tree diff (`git diff HEAD --name-status`).
+#[derive(Debug, Clone)]
+pub struct FileChange {
+    pub path: String,
+    /// "added" | "modified" | "deleted" | "renamed"
+    pub status: &'static str,
+    /// For renames: the old path.
+    pub renamed_from: Option<String>,
+}
+
+/// All files changed by the working tree relative to `HEAD` (staged +
+/// unstaged, rename-aware), PLUS untracked files (`git diff HEAD` alone would
+/// miss a brand-new file and falsely contradict "I created X"). Empty when
+/// git is unavailable or the tree is clean — callers must treat "empty" as
+/// "unknown", not "nothing changed", since the work may already be committed.
+pub fn changed_files(repo_dir: &str) -> Vec<FileChange> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .args(["diff", "HEAD", "--name-status", "-M", "--no-color"])
+        .output();
+    let text = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        _ => return Vec::new(),
+    };
+
+    let mut changes = Vec::new();
+    // Untracked (but not ignored) files are additions this turn.
+    if let Ok(o) = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .output()
+    {
+        if o.status.success() {
+            for path in String::from_utf8_lossy(&o.stdout).lines() {
+                if !path.is_empty() {
+                    changes.push(FileChange {
+                        path: path.to_string(),
+                        status: "added",
+                        renamed_from: None,
+                    });
+                }
+            }
+        }
+    }
+    for line in text.lines() {
+        let mut parts = line.split('\t');
+        let Some(code) = parts.next() else { continue };
+        let status = match code.chars().next() {
+            Some('A') => "added",
+            Some('M') => "modified",
+            Some('D') => "deleted",
+            Some('R') => "renamed",
+            _ => continue,
+        };
+        if status == "renamed" {
+            let (Some(from), Some(to)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            changes.push(FileChange {
+                path: to.to_string(),
+                status,
+                renamed_from: Some(from.to_string()),
+            });
+        } else if let Some(path) = parts.next() {
+            changes.push(FileChange {
+                path: path.to_string(),
+                status,
+                renamed_from: None,
+            });
+        }
+    }
+    changes
+}
+
+/// Evidence item carrying the status of one changed file (`file_status`).
+pub fn file_status_item(change: &FileChange) -> EvidenceItem {
+    diff_evidence_item(
+        "file_status",
+        Some(change.path.clone()),
+        json!(change.status),
+        json!({
+            "from_diff": true,
+            "file": change.path,
+            "renamed_from": change.renamed_from,
+        }),
+    )
+}
+
+/// Evidence item carrying the full diff file list (`diff_files`).
+pub fn diff_files_item(changes: &[FileChange]) -> EvidenceItem {
+    let paths: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+    diff_evidence_item(
+        "diff_files",
+        None,
+        json!(paths),
+        json!({ "from_diff": true, "count": changes.len() }),
+    )
+}
+
+/// Evidence item carrying changed-line hit counts for a subject (`diff_hits`).
+pub fn diff_hits_item(fact: &DiffFact) -> EvidenceItem {
+    diff_evidence_item(
+        "diff_hits",
+        Some(fact.subject.clone()),
+        json!(fact.added_hits),
+        json!({
+            "from_diff": true,
+            "removed_hits": fact.removed_hits,
+            "file": fact.file,
+        }),
+    )
+}
+
+/// Evidence item asserting whether a rename's NEW name is present after the
+/// change (`renamed_to_exists`).
+pub fn renamed_to_item(fact: &DiffFact) -> Option<EvidenceItem> {
+    let present = fact.present_after()?;
+    Some(diff_evidence_item(
+        "renamed_to_exists",
+        Some(fact.subject.clone()),
+        json!(present),
+        json!({ "from_diff": true, "file": fact.file }),
+    ))
+}
+
+fn diff_evidence_item(
+    predicate: &str,
+    subject: Option<String>,
+    value: serde_json::Value,
+    metadata: serde_json::Value,
+) -> EvidenceItem {
+    EvidenceItem {
+        id: new_id(),
+        span_id: String::new(),
+        evidence_type: EvidenceType::Change,
+        subject_text: subject,
+        subject_concept_id: None,
+        predicate: Some(predicate.into()),
+        object_text: None,
+        value_json: Some(value),
+        unit: None,
+        confidence: 0.9,
+        authority: Authority::Code,
+        valid_from: None,
+        valid_to: None,
+        extraction_method: ExtractionMethod::Deterministic,
+        metadata_json: metadata,
+    }
+}
+
 /// Scan the working-tree diff (staged + unstaged vs `HEAD`) in `repo_dir` for
 /// `subject`. Returns `Untouched` if git is unavailable or the subject doesn't
 /// appear — the caller then falls back to the index, so this never blocks.

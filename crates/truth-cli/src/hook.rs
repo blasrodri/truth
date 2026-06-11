@@ -1,0 +1,336 @@
+//! `truth hook` — make verification a gate the agent cannot skip.
+//!
+//! The MCP tool relies on the agent CHOOSING to call `verify_turn`. Hooks
+//! remove that choice: `truth hook install` registers truth in Claude Code's
+//! settings so that
+//!
+//! - on **Stop** (the agent finishing its turn), the agent's final message is
+//!   fact-checked against the repo/diff/receipts; contradictions BLOCK the
+//!   stop and are fed back so the agent corrects itself before the user ever
+//!   sees the claim;
+//! - on **PostToolUse** for Bash, test/build/lint commands the agent runs are
+//!   recorded as command receipts (when the hook payload carries an exit
+//!   code), which is what makes the agent's later "tests pass" verifiable.
+//!
+//! `truth hook claude` is the hook entry point itself: it reads the hook JSON
+//! from stdin and dispatches on `hook_event_name`. It is deliberately
+//! fail-open — any internal error exits 0 silently so a broken verifier can
+//! never wedge the user's session.
+
+use crate::config_util::{anchor_at, discover_root_from};
+use anyhow::Result;
+use serde_json::{json, Value};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use truth_core::config::Config;
+
+/// `truth hook install [--user]` — register the Stop + PostToolUse hooks in
+/// Claude Code settings (project `.claude/settings.json` by default).
+pub fn install(user: bool) -> Result<()> {
+    let path = if user {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+        home.join(".claude").join("settings.json")
+    } else {
+        PathBuf::from(".claude").join("settings.json")
+    };
+
+    let mut settings: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}));
+
+    let mut added = Vec::new();
+    if ensure_hook(&mut settings, "Stop", None) {
+        added.push("Stop");
+    }
+    if ensure_hook(&mut settings, "PostToolUse", Some("Bash")) {
+        added.push("PostToolUse(Bash)");
+    }
+
+    if added.is_empty() {
+        println!("truth hooks already installed in {}", path.display());
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&settings)?)?;
+    println!(
+        "Installed {} hook(s) in {}",
+        added.join(" + "),
+        path.display()
+    );
+    println!(
+        "- Stop: the agent's final message is fact-checked; contradictions block until fixed."
+    );
+    println!("- PostToolUse(Bash): test/build/lint runs are recorded as receipts for \"tests pass\" claims.");
+    Ok(())
+}
+
+/// Add `truth hook claude` under the given event if it isn't there yet.
+/// Returns true when settings were modified.
+fn ensure_hook(settings: &mut Value, event: &str, matcher: Option<&str>) -> bool {
+    let hooks = settings
+        .as_object_mut()
+        .expect("settings is an object")
+        .entry("hooks")
+        .or_insert_with(|| json!({}));
+    let entries = hooks
+        .as_object_mut()
+        .expect("hooks is an object")
+        .entry(event)
+        .or_insert_with(|| json!([]));
+    let arr = entries.as_array_mut().expect("event entry is an array");
+
+    let already = arr.iter().any(|e| {
+        e.get("hooks").and_then(|h| h.as_array()).is_some_and(|hs| {
+            hs.iter().any(|h| {
+                h.get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|c| c.contains("truth hook claude"))
+            })
+        })
+    });
+    if already {
+        return false;
+    }
+    let mut entry = json!({
+        "hooks": [{ "type": "command", "command": "truth hook claude" }]
+    });
+    if let Some(m) = matcher {
+        entry["matcher"] = json!(m);
+    }
+    arr.push(entry);
+    true
+}
+
+/// `truth hook claude` — the hook entry point. Reads the event JSON from
+/// stdin. Fail-open: errors exit 0 with no output.
+pub fn claude() -> Result<()> {
+    let mut input = String::new();
+    if std::io::stdin().read_to_string(&mut input).is_err() {
+        return Ok(());
+    }
+    let Ok(event): std::result::Result<Value, _> = serde_json::from_str(&input) else {
+        return Ok(());
+    };
+    let name = event
+        .get("hook_event_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    match name {
+        "Stop" => on_stop(&event),
+        "PostToolUse" => on_post_tool_use(&event),
+        _ => Ok(()),
+    }
+}
+
+/// Load the truth config for the repo the hook fired in. None when no
+/// `.truth`/`truth.toml` root exists up the tree (repo not initialized).
+fn config_for(event: &Value) -> Option<Config> {
+    let cwd = event
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())?;
+    let root = discover_root_from(&cwd)?;
+    let toml = root.join("truth.toml");
+    let mut config = if toml.is_file() {
+        Config::load(&toml).ok()?
+    } else {
+        Config::from_toml_str("").ok()?
+    };
+    anchor_at(&mut config, &root);
+    Some(config)
+}
+
+/// Stop hook: fact-check the agent's final message; block on contradictions.
+fn on_stop(event: &Value) -> Result<()> {
+    // Already continuing from a previous stop-hook block — never loop.
+    if event
+        .get("stop_hook_active")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let Some(config) = config_for(event) else {
+        return Ok(());
+    };
+    let Some(transcript) = event.get("transcript_path").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    let Some(message) = last_assistant_text(Path::new(transcript)) else {
+        return Ok(());
+    };
+
+    // Fail-open: any verification error must not wedge the session.
+    let report = (|| -> Result<_> {
+        let conn = truth_db::open(&config.database.path)?;
+        crate::verify_turn::verify(&conn, &config, &message, None)
+    })();
+    let Ok(report) = report else { return Ok(()) };
+
+    if report.has_contradiction() {
+        let table = crate::verify_turn::render_text(&report);
+        println!(
+            "{}",
+            json!({
+                "decision": "block",
+                "reason": format!(
+                    "truth fact-checked your message against the repo, the working-tree \
+                     diff, and recorded runs — it contradicts the evidence:\n\n{table}\n\n\
+                     Fix the code or correct the contradicted claims, then finish."
+                ),
+            })
+        );
+    }
+    Ok(())
+}
+
+/// PostToolUse(Bash) hook: record test/build/lint runs as command receipts.
+/// Only records when the payload carries a real exit code — receipts are never
+/// guessed.
+fn on_post_tool_use(event: &Value) -> Result<()> {
+    if event.get("tool_name").and_then(|v| v.as_str()) != Some("Bash") {
+        return Ok(());
+    }
+    let Some(command) = event
+        .pointer("/tool_input/command")
+        .and_then(|v| v.as_str())
+    else {
+        return Ok(());
+    };
+    let kind = crate::run::classify_kind(command);
+    if kind == "other" {
+        return Ok(());
+    }
+    let Some(exit_code) = exit_code_from(event.get("tool_response")) else {
+        return Ok(());
+    };
+    let Some(config) = config_for(event) else {
+        return Ok(());
+    };
+    // Best-effort: a failed insert must not surface into the session.
+    let _ = (|| -> Result<()> {
+        let conn = truth_db::open(&config.database.path)?;
+        let now = truth_core::now_secs();
+        truth_db::repo::insert_run(
+            &conn,
+            &truth_core::models::Run {
+                id: truth_core::new_id(),
+                command: command.to_string(),
+                kind: kind.to_string(),
+                exit_code,
+                started_at: now,
+                finished_at: now,
+                duration_ms: None,
+                output_digest: None,
+                output_tail: None,
+                metadata_json: json!({ "recorded_by": "claude-code hook" }),
+            },
+        )
+    })();
+    Ok(())
+}
+
+/// Find an exit code in the PostToolUse tool_response, across the field names
+/// different Claude Code versions have used. None → don't record.
+fn exit_code_from(response: Option<&Value>) -> Option<i64> {
+    let r = response?;
+    for key in ["exit_code", "exitCode", "code", "returncode"] {
+        if let Some(n) = r.get(key).and_then(|v| v.as_i64()) {
+            return Some(n);
+        }
+    }
+    // Some payloads nest the result.
+    for key in ["result", "output"] {
+        if let Some(n) = exit_code_from(r.get(key)) {
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// Last assistant message text from a Claude Code transcript (JSONL).
+fn last_assistant_text(transcript: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(transcript).ok()?;
+    for line in content.lines().rev() {
+        let Ok(entry): std::result::Result<Value, _> = serde_json::from_str(line) else {
+            continue;
+        };
+        if entry.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        let message = entry.get("message")?;
+        let text = match message.get("content") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Array(blocks)) => blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => continue,
+        };
+        let text = text.trim().to_string();
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_hook_is_idempotent_and_preserves_settings() {
+        let mut s = json!({ "permissions": { "allow": ["Bash(ls:*)"] } });
+        assert!(ensure_hook(&mut s, "Stop", None));
+        assert!(
+            !ensure_hook(&mut s, "Stop", None),
+            "second install is a no-op"
+        );
+        assert!(ensure_hook(&mut s, "PostToolUse", Some("Bash")));
+        // Pre-existing settings survive.
+        assert_eq!(s["permissions"]["allow"][0], "Bash(ls:*)");
+        assert_eq!(s["hooks"]["PostToolUse"][0]["matcher"], "Bash");
+    }
+
+    #[test]
+    fn extracts_exit_code_across_shapes() {
+        assert_eq!(exit_code_from(Some(&json!({"exit_code": 1}))), Some(1));
+        assert_eq!(exit_code_from(Some(&json!({"exitCode": 0}))), Some(0));
+        assert_eq!(
+            exit_code_from(Some(&json!({"result": {"code": 101}}))),
+            Some(101)
+        );
+        assert_eq!(exit_code_from(Some(&json!({"stdout": "ok"}))), None);
+    }
+
+    #[test]
+    fn reads_last_assistant_text_from_transcript() {
+        let tmp = std::env::temp_dir().join(format!("truth-hook-{}.jsonl", std::process::id()));
+        std::fs::write(
+            &tmp,
+            concat!(
+                r#"{"type":"user","message":{"content":"do it"}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"I set MAX_RETRIES to 5"}]}}"#,
+                "\n",
+                r#"{"type":"system","subtype":"other"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            last_assistant_text(&tmp).as_deref(),
+            Some("I set MAX_RETRIES to 5")
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+}

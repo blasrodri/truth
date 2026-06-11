@@ -267,6 +267,90 @@ pub fn insert_verdict(conn: &Connection, v: &Verdict) -> Result<()> {
     Ok(())
 }
 
+pub fn insert_run(conn: &Connection, r: &Run) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO runs
+         (id, command, kind, exit_code, started_at, finished_at, duration_ms, output_digest, output_tail, metadata_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![
+            r.id,
+            r.command,
+            r.kind,
+            r.exit_code,
+            r.started_at,
+            r.finished_at,
+            r.duration_ms,
+            r.output_digest,
+            r.output_tail,
+            js(&r.metadata_json),
+        ],
+    )?;
+    Ok(())
+}
+
+fn run_from_row(row: &rusqlite::Row) -> rusqlite::Result<Run> {
+    Ok(Run {
+        id: row.get(0)?,
+        command: row.get(1)?,
+        kind: row.get(2)?,
+        exit_code: row.get(3)?,
+        started_at: row.get(4)?,
+        finished_at: row.get(5)?,
+        duration_ms: row.get(6)?,
+        output_digest: row.get(7)?,
+        output_tail: row.get(8)?,
+        metadata_json: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
+    })
+}
+
+/// Most recent receipt for a command kind ("test", "build", ...).
+pub fn latest_run_for_kind(conn: &Connection, kind: &str) -> Result<Option<Run>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, command, kind, exit_code, started_at, finished_at, duration_ms, output_digest, output_tail, metadata_json
+         FROM runs WHERE kind = ?1 ORDER BY finished_at DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map(params![kind], run_from_row)?;
+    Ok(rows.next().transpose()?)
+}
+
+/// All receipts since a unix timestamp, newest first (for `truth stats`).
+pub fn runs_since(conn: &Connection, since: i64) -> Result<Vec<Run>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, command, kind, exit_code, started_at, finished_at, duration_ms, output_digest, output_tail, metadata_json
+         FROM runs WHERE finished_at >= ?1 ORDER BY finished_at DESC",
+    )?;
+    let rows = stmt.query_map(params![since], run_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// A check joined with its verdict, for the audit-trail ledger (`truth stats`).
+#[derive(Debug, Clone)]
+pub struct CheckVerdictRow {
+    pub question: String,
+    pub metadata_json: serde_json::Value,
+    pub status: String,
+    pub created_at: i64,
+}
+
+/// Completed checks (with verdicts) since a unix timestamp, newest first.
+pub fn check_verdicts_since(conn: &Connection, since: i64) -> Result<Vec<CheckVerdictRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.question, c.metadata_json, v.status, v.created_at
+         FROM verdicts v JOIN checks c ON c.id = v.check_id
+         WHERE v.created_at >= ?1
+         ORDER BY v.created_at DESC",
+    )?;
+    let rows = stmt.query_map(params![since], |row| {
+        Ok(CheckVerdictRow {
+            question: row.get(0)?,
+            metadata_json: serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or_default(),
+            status: row.get(2)?,
+            created_at: row.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// All evidence items whose subject text matches (used by repo query types).
 pub fn evidence_by_subject(conn: &Connection, subject: &str) -> Result<Vec<EvidenceItem>> {
     let mut stmt = conn.prepare(

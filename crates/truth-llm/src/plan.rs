@@ -90,6 +90,14 @@ pub fn plan_for(
         ClaimType::RetryCount | ClaimType::TimeoutValue | ClaimType::VersionRequired => {
             queries.push(repo_query(QueryType::ConstantValue, subject.clone()));
         }
+        // Diff- and receipt-backed claims: evidence is gathered live in the
+        // check pipeline (working-tree diff / command receipts), not via a
+        // stored query. Nothing to plan.
+        ClaimType::FileChanged
+        | ClaimType::OnlyChanged
+        | ClaimType::ChangeCount
+        | ClaimType::SymbolRenamed
+        | ClaimType::CommandSucceeded => {}
         ClaimType::Unknown => {}
     }
 

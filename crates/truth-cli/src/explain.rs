@@ -2,7 +2,6 @@
 //! audit trail: question, extracted claim, evidence queries, and verdict.
 
 use anyhow::{anyhow, Result};
-use std::path::Path;
 use truth_core::config::Config;
 
 pub fn explain(check_id: &str, json: bool) -> Result<()> {
@@ -131,9 +130,5 @@ fn title(db_str: &str) -> String {
 }
 
 fn load_config() -> Result<Config> {
-    if Path::new("truth.toml").exists() {
-        Config::load("truth.toml")
-    } else {
-        Ok(Config::from_toml_str("")?)
-    }
+    crate::config_util::load_config()
 }

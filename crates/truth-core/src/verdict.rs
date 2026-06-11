@@ -80,7 +80,12 @@ pub fn question_type_for(claim_type: ClaimType) -> QuestionType {
         ClaimType::RouteExists
         | ClaimType::SymbolExists
         | ClaimType::EnvVarExists
-        | ClaimType::FeatureFlagEnabled => QuestionType::CurrentImplementation,
+        | ClaimType::FeatureFlagEnabled
+        | ClaimType::FileChanged
+        | ClaimType::OnlyChanged
+        | ClaimType::ChangeCount
+        | ClaimType::SymbolRenamed
+        | ClaimType::CommandSucceeded => QuestionType::CurrentImplementation,
         ClaimType::ConfigValue
         | ClaimType::RetryCount
         | ClaimType::TimeoutValue
@@ -113,6 +118,11 @@ pub fn decide(input: &VerdictInput) -> VerdictDecision {
         | ClaimType::TimeoutValue
         | ClaimType::VersionRequired => decide_value(input),
         ClaimType::JobLastSuccess => decide_latest(input),
+        ClaimType::FileChanged => decide_file_changed(input),
+        ClaimType::OnlyChanged => decide_only_changed(input),
+        ClaimType::ChangeCount => decide_change_count(input),
+        ClaimType::SymbolRenamed => decide_renamed(input),
+        ClaimType::CommandSucceeded => decide_command(input),
         ClaimType::Unknown => unreachable!(),
     }
 }
@@ -620,6 +630,376 @@ fn decide_value(input: &VerdictInput) -> VerdictDecision {
     }
 }
 
+/// File-change claim ("I edited src/auth.rs"). Decided from the working-tree
+/// diff file list (`file_status` / `diff_files` items). `claim.value` holds the
+/// expected change kind: "added" | "modified" | "deleted".
+fn decide_file_changed(input: &VerdictInput) -> VerdictDecision {
+    let subject = input.claim.subject.as_deref().unwrap_or("the file");
+    let expected = input
+        .claim
+        .value
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .unwrap_or("modified");
+    let status_item = input
+        .items
+        .iter()
+        .find(|i| i.predicate.as_deref() == Some("file_status"));
+    let diff_nonempty = input
+        .items
+        .iter()
+        .any(|i| i.predicate.as_deref() == Some("diff_files"));
+
+    match status_item {
+        Some(item) => {
+            let actual = item
+                .value_json
+                .as_ref()
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let file = item
+                .metadata_json
+                .get("file")
+                .and_then(|v| v.as_str())
+                .unwrap_or(subject);
+            let ok = match expected {
+                "added" => actual == "added",
+                "deleted" => actual == "deleted",
+                // "I edited X" is satisfied by any change that leaves the file
+                // present — a brand-new file still counts as edited.
+                _ => matches!(actual, "modified" | "added" | "renamed"),
+            };
+            if ok {
+                VerdictDecision {
+                    status: VerdictStatus::Supported,
+                    confidence: 0.9,
+                    evidence_ids: vec![format!("diff:{file}={actual}")],
+                    caveats: vec!["Based on the working-tree git diff vs HEAD.".to_string()],
+                    suggested_action: None,
+                }
+            } else {
+                VerdictDecision {
+                    status: VerdictStatus::Contradicted,
+                    confidence: 0.88,
+                    evidence_ids: vec![format!("diff:{file}={actual}")],
+                    caveats: vec![format!(
+                        "Claimed {expected}, but the diff shows `{file}` was {actual}."
+                    )],
+                    suggested_action: Some("Re-check what actually changed.".to_string()),
+                }
+            }
+        }
+        // The diff has changes, but none touch this file → the claim is false
+        // for THIS turn's work.
+        None if diff_nonempty => VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.8,
+            evidence_ids: vec!["diff:files".to_string()],
+            caveats: vec![format!(
+                "The working-tree diff does not touch `{subject}`."
+            )],
+            suggested_action: Some(
+                "Claimed a change to this file, but the diff doesn't include it.".to_string(),
+            ),
+        },
+        None => inconclusive(
+            "The working tree has no changes vs HEAD, so I can't verify what this turn changed (already committed?).",
+            None,
+        ),
+    }
+}
+
+/// Scope claim ("I only changed X" / "no other files were touched"). Every
+/// path in the diff file list must match the subject.
+fn decide_only_changed(input: &VerdictInput) -> VerdictDecision {
+    let subject = match input.claim.subject.as_deref() {
+        Some(s) if !s.trim().is_empty() => s,
+        _ => {
+            return inconclusive(
+                "An 'only changed X' claim needs a concrete file or path to compare against.",
+                None,
+            )
+        }
+    };
+    let files: Vec<String> = input
+        .items
+        .iter()
+        .find(|i| i.predicate.as_deref() == Some("diff_files"))
+        .and_then(|i| i.value_json.as_ref())
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if files.is_empty() {
+        return inconclusive(
+            "The working tree has no changes vs HEAD, so I can't verify the scope of this turn's work (already committed?).",
+            None,
+        );
+    }
+
+    let matches_subject = |p: &str| p.contains(subject);
+    let offenders: Vec<&String> = files.iter().filter(|p| !matches_subject(p)).collect();
+    let touched = files.iter().any(|p| matches_subject(p));
+
+    if !touched {
+        return VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.85,
+            evidence_ids: vec!["diff:files".to_string()],
+            caveats: vec![format!(
+                "The diff does not touch `{subject}` at all ({} other file(s) changed).",
+                files.len()
+            )],
+            suggested_action: Some("Re-check what actually changed.".to_string()),
+        };
+    }
+    if offenders.is_empty() {
+        return VerdictDecision {
+            status: VerdictStatus::Supported,
+            confidence: 0.88,
+            evidence_ids: vec!["diff:files".to_string()],
+            caveats: vec![format!(
+                "All {} changed file(s) match `{subject}` (working-tree diff vs HEAD).",
+                files.len()
+            )],
+            suggested_action: None,
+        };
+    }
+    let shown: Vec<&str> = offenders.iter().take(3).map(|s| s.as_str()).collect();
+    let more = offenders.len().saturating_sub(shown.len());
+    let mut list = shown.join(", ");
+    if more > 0 {
+        list.push_str(&format!(" (+{more} more)"));
+    }
+    VerdictDecision {
+        status: VerdictStatus::Contradicted,
+        confidence: 0.88,
+        evidence_ids: vec!["diff:files".to_string()],
+        caveats: vec![format!("The diff also touches: {list}.")],
+        suggested_action: Some(
+            "Other files were changed too; mention them or revert them.".to_string(),
+        ),
+    }
+}
+
+/// Count claim about the change itself ("updated all 4 call sites of X").
+/// Compared against changed-line hits for the subject in the diff. Line-based,
+/// so it's an approximation — mismatches are Partial, not Contradicted.
+fn decide_change_count(input: &VerdictInput) -> VerdictDecision {
+    let subject = input.claim.subject.as_deref().unwrap_or("the subject");
+    let Some(expected) = input.claim.expected_number() else {
+        return VerdictDecision {
+            status: VerdictStatus::NeedsMoreContext,
+            confidence: 0.4,
+            evidence_ids: vec![],
+            caveats: vec!["The claim did not state a count to compare against.".to_string()],
+            suggested_action: None,
+        };
+    };
+    let item = input
+        .items
+        .iter()
+        .find(|i| i.predicate.as_deref() == Some("diff_hits"));
+    let Some(item) = item else {
+        return inconclusive(
+            "The working tree has no changes vs HEAD, so I can't count this turn's edits (already committed?).",
+            None,
+        );
+    };
+    let hits = item
+        .value_json
+        .as_ref()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    if hits == 0.0 {
+        return VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.85,
+            evidence_ids: vec![format!("diff:hits={hits}")],
+            caveats: vec![format!(
+                "The diff has no changed lines mentioning `{subject}`."
+            )],
+            suggested_action: Some("Re-check what actually changed.".to_string()),
+        };
+    }
+    if (hits - expected).abs() < f64::EPSILON {
+        return VerdictDecision {
+            status: VerdictStatus::Supported,
+            confidence: 0.8,
+            evidence_ids: vec![format!("diff:hits={hits}")],
+            caveats: vec![
+                "Counted changed lines mentioning the subject (an approximation of sites)."
+                    .to_string(),
+            ],
+            suggested_action: None,
+        };
+    }
+    VerdictDecision {
+        status: VerdictStatus::PartiallySupported,
+        confidence: 0.7,
+        evidence_ids: vec![format!("diff:hits={hits}")],
+        caveats: vec![format!(
+            "Claimed {expected}, but the diff shows {hits} changed line(s) mentioning `{subject}` (line-based count)."
+        )],
+        suggested_action: Some("Verify the exact number of sites changed.".to_string()),
+    }
+}
+
+/// Rename claim ("I renamed X to Y"). The diff must show the old name removed
+/// and the new name added; the old name surviving the diff (or the index, when
+/// the diff is silent) catches the lie.
+fn decide_renamed(input: &VerdictInput) -> VerdictDecision {
+    let old = input.claim.subject.as_deref().unwrap_or("the old name");
+    let new = input
+        .claim
+        .value
+        .as_ref()
+        .and_then(|v| v.get("to"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("the new name");
+
+    // Old-name presence after this turn's change, from the diff.
+    let old_present_after: Option<bool> = input
+        .items
+        .iter()
+        .find(|i| {
+            i.predicate.as_deref() == Some("route_exists")
+                && i.metadata_json
+                    .get("from_diff")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
+        .and_then(|i| i.value_json.as_ref())
+        .and_then(|v| v.as_bool());
+    // New-name presence after this turn's change, from the diff.
+    let new_added: Option<bool> = input
+        .items
+        .iter()
+        .find(|i| i.predicate.as_deref() == Some("renamed_to_exists"))
+        .and_then(|i| i.value_json.as_ref())
+        .and_then(|v| v.as_bool());
+
+    match (old_present_after, new_added) {
+        (Some(true), _) => VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.85,
+            evidence_ids: vec![format!("diff:{old}")],
+            caveats: vec![format!(
+                "`{old}` is still present after this turn's changes."
+            )],
+            suggested_action: Some(
+                "Claimed renamed, but the old name survives. Re-check the change.".to_string(),
+            ),
+        },
+        (Some(false), Some(true)) => VerdictDecision {
+            status: VerdictStatus::Supported,
+            confidence: 0.88,
+            evidence_ids: vec![format!("diff:{old}->{new}")],
+            caveats: vec![format!("The diff removes `{old}` and adds `{new}`.")],
+            suggested_action: None,
+        },
+        (Some(false), _) => VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.75,
+            evidence_ids: vec![format!("diff:{old}")],
+            caveats: vec![format!(
+                "`{old}` was removed, but `{new}` was not added by this diff."
+            )],
+            suggested_action: Some("The new name is missing from the change.".to_string()),
+        },
+        // Diff is silent. The index can still catch "renamed" when the old
+        // name is in fact still defined.
+        (None, _) => match input.symbol_status.as_deref() {
+            Some("referenced") | Some("definition_only") => VerdictDecision {
+                status: VerdictStatus::Contradicted,
+                confidence: 0.75,
+                evidence_ids: vec![format!("code:{old}")],
+                caveats: vec![format!("`{old}` is still defined in the indexed code.")],
+                suggested_action: Some(
+                    "Claimed renamed, but the old name is still defined.".to_string(),
+                ),
+            },
+            _ => inconclusive(
+                "I couldn't find the rename in the working-tree diff or the index.",
+                None,
+            ),
+        },
+    }
+}
+
+/// Command-success claim ("tests pass", "it compiles"). Decided ONLY from
+/// recorded command receipts (`truth run -- <cmd>`): a successful run must
+/// postdate the last working-tree edit, otherwise it proves nothing about the
+/// current code. No receipt → refused, never guessed.
+fn decide_command(input: &VerdictInput) -> VerdictDecision {
+    let subject = input.claim.subject.as_deref().unwrap_or("the command");
+    let receipt = input
+        .items
+        .iter()
+        .find(|i| i.predicate.as_deref() == Some("command_receipt"));
+
+    let Some(item) = receipt else {
+        return inconclusive(
+            &format!(
+                "No recorded run of {subject} — record runs with `truth run -- <cmd>` (or the agent hook) so success claims become checkable."
+            ),
+            None,
+        );
+    };
+
+    let exit_code = item
+        .metadata_json
+        .get("exit_code")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(-1);
+    let fresh = item
+        .metadata_json
+        .get("fresh")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let command = item
+        .metadata_json
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or(subject);
+
+    if exit_code != 0 {
+        return VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.92,
+            evidence_ids: vec![format!("run:{command}")],
+            caveats: vec![format!(
+                "The most recent recorded run of `{command}` exited {exit_code}."
+            )],
+            suggested_action: Some(
+                "Fix the failure or re-run before claiming success.".to_string(),
+            ),
+        };
+    }
+    if !fresh {
+        return inconclusive(
+            &format!(
+                "The last successful run of `{command}` predates the latest working-tree edits, so it proves nothing about the current code. Re-run it."
+            ),
+            None,
+        );
+    }
+    VerdictDecision {
+        status: VerdictStatus::Supported,
+        confidence: 0.9,
+        evidence_ids: vec![format!("run:{command}")],
+        caveats: vec![format!(
+            "`{command}` exited 0 after the last working-tree edit (recorded receipt)."
+        )],
+        suggested_action: None,
+    }
+}
+
 fn usage_caveats(input: &VerdictInput) -> Vec<String> {
     let mut c = vec![];
     if input
@@ -926,5 +1306,244 @@ mod tests {
             symbol_status: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
+    }
+
+    // ---- diff-native claim family -----------------------------------------
+
+    fn decide_with(claim: &StructuredClaim, items: &[EvidenceItem]) -> VerdictDecision {
+        decide(&VerdictInput {
+            claim,
+            items,
+            query_results: &[],
+            usage_threshold: 0,
+            code_references: None,
+            symbol_status: None,
+        })
+    }
+
+    fn typed_claim(
+        ct: ClaimType,
+        subject: &str,
+        value: Option<serde_json::Value>,
+    ) -> StructuredClaim {
+        StructuredClaim {
+            is_checkable: true,
+            claim_type: ct,
+            subject: Some(subject.into()),
+            predicate: None,
+            operator: ClaimOperator::Exists,
+            value,
+            unit: None,
+            time_window: None,
+            environment: None,
+            confidence: 0.8,
+            needs_clarification: false,
+            clarification_question: None,
+        }
+    }
+
+    fn pred_item(
+        predicate: &str,
+        value: serde_json::Value,
+        metadata: serde_json::Value,
+    ) -> EvidenceItem {
+        let mut it = def_item(predicate, 0.0);
+        it.evidence_type = EvidenceType::Change;
+        it.value_json = Some(value);
+        it.metadata_json = metadata;
+        it
+    }
+
+    #[test]
+    fn file_changed_supported_and_contradicted_by_status() {
+        let claim = typed_claim(
+            ClaimType::FileChanged,
+            "src/auth.rs",
+            Some(json!("modified")),
+        );
+        let items = [pred_item(
+            "file_status",
+            json!("modified"),
+            json!({"from_diff": true, "file": "src/auth.rs"}),
+        )];
+        assert_eq!(decide_with(&claim, &items).status, VerdictStatus::Supported);
+
+        // Claimed deleted, but the diff shows it was modified.
+        let lie = typed_claim(
+            ClaimType::FileChanged,
+            "src/auth.rs",
+            Some(json!("deleted")),
+        );
+        assert_eq!(
+            decide_with(&lie, &items).status,
+            VerdictStatus::Contradicted
+        );
+    }
+
+    #[test]
+    fn file_changed_contradicted_when_diff_skips_the_file() {
+        // Other files changed, but not the claimed one.
+        let claim = typed_claim(
+            ClaimType::FileChanged,
+            "src/auth.rs",
+            Some(json!("modified")),
+        );
+        let items = [pred_item(
+            "diff_files",
+            json!(["src/other.rs"]),
+            json!({"from_diff": true}),
+        )];
+        assert_eq!(
+            decide_with(&claim, &items).status,
+            VerdictStatus::Contradicted
+        );
+    }
+
+    #[test]
+    fn file_changed_unknown_on_clean_tree() {
+        // Empty diff: the work may already be committed — never contradict.
+        let claim = typed_claim(
+            ClaimType::FileChanged,
+            "src/auth.rs",
+            Some(json!("modified")),
+        );
+        assert_eq!(decide_with(&claim, &[]).status, VerdictStatus::Inconclusive);
+    }
+
+    #[test]
+    fn only_changed_catches_collateral_edits() {
+        let claim = typed_claim(ClaimType::OnlyChanged, "src/parser", None);
+        let clean = [pred_item(
+            "diff_files",
+            json!(["src/parser/mod.rs", "src/parser/expr.rs"]),
+            json!({"from_diff": true}),
+        )];
+        assert_eq!(decide_with(&claim, &clean).status, VerdictStatus::Supported);
+
+        let collateral = [pred_item(
+            "diff_files",
+            json!(["src/parser/mod.rs", "src/api/routes.rs"]),
+            json!({"from_diff": true}),
+        )];
+        let d = decide_with(&claim, &collateral);
+        assert_eq!(d.status, VerdictStatus::Contradicted);
+        assert!(d.caveats.iter().any(|c| c.contains("src/api/routes.rs")));
+    }
+
+    #[test]
+    fn change_count_exact_partial_and_zero() {
+        let claim = typed_claim(ClaimType::ChangeCount, "parse_config", Some(json!(4)));
+        let exact = [pred_item("diff_hits", json!(4), json!({"from_diff": true}))];
+        assert_eq!(decide_with(&claim, &exact).status, VerdictStatus::Supported);
+
+        let off = [pred_item("diff_hits", json!(2), json!({"from_diff": true}))];
+        assert_eq!(
+            decide_with(&claim, &off).status,
+            VerdictStatus::PartiallySupported
+        );
+
+        let zero = [pred_item("diff_hits", json!(0), json!({"from_diff": true}))];
+        assert_eq!(
+            decide_with(&claim, &zero).status,
+            VerdictStatus::Contradicted
+        );
+    }
+
+    #[test]
+    fn rename_requires_old_gone_and_new_added() {
+        let claim = typed_claim(
+            ClaimType::SymbolRenamed,
+            "parse_legacy",
+            Some(json!({"to": "parse_v2"})),
+        );
+        // Old removed + new added → Supported.
+        let good = [
+            diff_item(false),
+            pred_item("renamed_to_exists", json!(true), json!({"from_diff": true})),
+        ];
+        assert_eq!(decide_with(&claim, &good).status, VerdictStatus::Supported);
+
+        // Old name survives the diff → Contradicted.
+        let survives = [diff_item(true)];
+        assert_eq!(
+            decide_with(&claim, &survives).status,
+            VerdictStatus::Contradicted
+        );
+
+        // Old removed but new name never added → Contradicted.
+        let half = [diff_item(false)];
+        assert_eq!(
+            decide_with(&claim, &half).status,
+            VerdictStatus::Contradicted
+        );
+    }
+
+    #[test]
+    fn rename_falls_back_to_index_when_diff_silent() {
+        let claim = typed_claim(
+            ClaimType::SymbolRenamed,
+            "parse_legacy",
+            Some(json!({"to": "parse_v2"})),
+        );
+        // No diff evidence, but the index still has the old symbol defined.
+        let d = decide(&VerdictInput {
+            claim: &claim,
+            items: &[],
+            query_results: &[],
+            usage_threshold: 0,
+            code_references: None,
+            symbol_status: Some("definition_only".into()),
+        });
+        assert_eq!(d.status, VerdictStatus::Contradicted);
+    }
+
+    // ---- command receipts ---------------------------------------------------
+
+    fn receipt_item(exit_code: i64, fresh: bool) -> EvidenceItem {
+        pred_item(
+            "command_receipt",
+            json!({"exit_code": exit_code}),
+            json!({
+                "command": "cargo test",
+                "exit_code": exit_code,
+                "fresh": fresh,
+            }),
+        )
+    }
+
+    #[test]
+    fn tests_pass_supported_only_by_fresh_green_receipt() {
+        let claim = typed_claim(ClaimType::CommandSucceeded, "test", None);
+        let fresh_green = [receipt_item(0, true)];
+        assert_eq!(
+            decide_with(&claim, &fresh_green).status,
+            VerdictStatus::Supported
+        );
+    }
+
+    #[test]
+    fn tests_pass_contradicted_by_failing_receipt() {
+        let claim = typed_claim(ClaimType::CommandSucceeded, "test", None);
+        let red = [receipt_item(101, true)];
+        let d = decide_with(&claim, &red);
+        assert_eq!(d.status, VerdictStatus::Contradicted);
+        assert!(d.caveats.iter().any(|c| c.contains("101")));
+    }
+
+    #[test]
+    fn tests_pass_stale_receipt_proves_nothing() {
+        // Green run BEFORE the latest edits: refused, not supported.
+        let claim = typed_claim(ClaimType::CommandSucceeded, "test", None);
+        let stale = [receipt_item(0, false)];
+        assert_eq!(
+            decide_with(&claim, &stale).status,
+            VerdictStatus::Inconclusive
+        );
+    }
+
+    #[test]
+    fn tests_pass_refused_without_any_receipt() {
+        let claim = typed_claim(ClaimType::CommandSucceeded, "test", None);
+        assert_eq!(decide_with(&claim, &[]).status, VerdictStatus::Inconclusive);
     }
 }

@@ -260,9 +260,5 @@ fn record_to_file(
 }
 
 fn load_config() -> Result<Config> {
-    if Path::new("truth.toml").exists() {
-        Config::load("truth.toml")
-    } else {
-        Ok(Config::from_toml_str("")?)
-    }
+    crate::config_util::load_config()
 }

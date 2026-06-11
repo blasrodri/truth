@@ -31,12 +31,16 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ExtractorMode {
-    /// Regex-only (current behavior, the conservative default).
-    #[default]
+    /// Regex-only. Fast and language-agnostic, but noisy on real-world code
+    /// (path-like strings match as routes). Opt in via config/flag.
     Regex,
-    /// AST for supported languages (Rust routes); regex for everything else.
+    /// AST for supported languages (Rust/TS/JS/Python/Go); regex for
+    /// everything else.
     Ast,
-    /// AST where available, regex where not. AST routes win over regex routes.
+    /// AST where available, regex where not — AST evidence wins over regex
+    /// for AST-supported languages. The default: false routes/symbols are a
+    /// verifier's worst failure mode, and AST precision removes them.
+    #[default]
     Mixed,
 }
 

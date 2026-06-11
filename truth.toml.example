@@ -46,9 +46,11 @@ allowed_environments = ["prod", "staging"]
 default_confidence_threshold = 0.75
 
 [indexer]
-# Extraction backend: "regex" (default) | "ast" | "mixed".
-# - regex: regex-only (fast, backwards-compatible).
-# - ast:   tree-sitter for Rust routes; regex for everything else.
-# - mixed: AST routes win over regex routes; regex fills the rest.
+# Extraction backend: "mixed" (default) | "ast" | "regex".
+# - mixed: AST evidence wins over regex for AST-supported languages; regex
+#          fills the rest. The default — AST precision kills false routes.
+# - ast:   tree-sitter routes/constants/symbols for Rust, TypeScript/JS/TSX,
+#          Python, and Go; regex for everything else.
+# - regex: regex-only (fastest, language-agnostic, noisier).
 # The `truth index --extractor` flag overrides this.
-extractor = "regex"
+extractor = "mixed"

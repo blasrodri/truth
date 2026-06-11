@@ -148,6 +148,11 @@ fn slug_for(c: &Candidate) -> String {
         ClaimType::JobLastSuccess => "job",
         ClaimType::LatestOccurrence => "latest",
         ClaimType::FeatureFlagEnabled => "flag",
+        ClaimType::FileChanged => "file",
+        ClaimType::OnlyChanged => "scope",
+        ClaimType::ChangeCount => "count",
+        ClaimType::SymbolRenamed => "rename",
+        ClaimType::CommandSucceeded => "run",
         ClaimType::Unknown => "claim",
     };
     format!("{stem}-{kind}")

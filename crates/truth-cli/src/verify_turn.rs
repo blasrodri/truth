@@ -145,12 +145,22 @@ impl TurnReport {
 /// on sentence terminators, newlines, semicolons, and a small set of clause
 /// conjunctions, then keep only segments long enough to plausibly be a claim.
 pub fn segment(message: &str) -> Vec<String> {
-    // Normalize hard breaks to a sentinel, then split on it.
+    // Normalize hard breaks to a sentinel, then split on it. A '.' only ends a
+    // sentence when followed by whitespace or end-of-text — otherwise it's part
+    // of a token ("src/config.rs", "3.5") and must survive segmentation.
     let mut buf = String::with_capacity(message.len());
-    for ch in message.chars() {
+    let chars: Vec<char> = message.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
         match ch {
-            '.' | '!' | '?' | ';' | '\n' | '\r' => buf.push('\u{1}'),
-            ',' => buf.push('\u{1}'),
+            '.' => {
+                let next = chars.get(i + 1);
+                if next.is_none_or(|c| c.is_whitespace()) {
+                    buf.push('\u{1}');
+                } else {
+                    buf.push(ch);
+                }
+            }
+            '!' | '?' | ';' | '\n' | '\r' | ',' => buf.push('\u{1}'),
             _ => buf.push(ch),
         }
     }
@@ -222,7 +232,12 @@ fn is_plausible_claim(s: &str) -> bool {
     let has_verb = ["added", "removed", "deleted", "dropped", "created", "wired"]
         .iter()
         .any(|v| lower.contains(v));
-    has_path || has_number || has_const || has_verb
+    // Command-success clauses ("tests pass", "clippy clean") are checkable
+    // against recorded run receipts, so terse ones survive segmentation.
+    let has_success = ["pass", "green", "compiles", "clean"]
+        .iter()
+        .any(|v| lower.contains(v));
+    has_path || has_number || has_const || has_verb || has_success
 }
 
 /// Run a full turn verification against the indexed repo / diff / logs.
@@ -463,12 +478,14 @@ mod tests {
     }
 
     #[test]
-    fn keeps_terse_path_clause_but_drops_bare_filler() {
+    fn keeps_terse_path_clause_and_success_clause_drops_filler() {
         // "removed /v1/checkout" (2 words, has a path) is kept; "tests pass"
-        // (2 words, no concrete subject) is dropped as unverifiable filler.
-        let segs = segment("removed /v1/checkout, tests pass");
+        // is now ALSO kept — it's checkable against recorded run receipts
+        // (`truth run`). Bare filler like "done" still drops.
+        let segs = segment("removed /v1/checkout, tests pass, done");
         assert!(segs.iter().any(|s| s.contains("/v1/checkout")));
-        assert!(!segs.iter().any(|s| s == "tests pass"));
+        assert!(segs.iter().any(|s| s == "tests pass"));
+        assert!(!segs.iter().any(|s| s == "done"));
     }
 
     #[test]

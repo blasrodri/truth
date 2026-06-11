@@ -33,7 +33,7 @@ const SETTINGS: &[Setting] = &[
     Setting {
         key: "indexer.extractor",
         help:
-            "Extraction backend: regex (fast) | ast | mixed (AST precision for Rust symbols/routes)",
+            "Extraction backend: regex (fast) | ast | mixed (AST-precise symbols/routes for Rust/TS/Python/Go)",
         allowed: &["regex", "ast", "mixed"],
         kind: Kind::Str,
     },

@@ -1,0 +1,80 @@
+# Fact-check a pull request's description against its actual diff with truth.
+#
+# Copy this file to .github/workflows/pr-factcheck.yml in your repo. When a PR
+# opens or its description changes, truth checks every concrete claim in the
+# body ("adds /v1/refund", "sets MAX_RETRIES to 5", "only touches the parser",
+# "renames X to Y") against the real diff and the indexed code, and posts the
+# cited verdict table as a comment. Agent-written PRs get fact-checked before
+# any human reads them.
+#
+# The trick that makes diff-native claims work in CI: after checkout we
+# `git reset --soft` to the base branch, so the PR's entire change becomes the
+# working-tree diff vs HEAD — exactly what truth verifies locally.
+
+name: pr-factcheck
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  factcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install truth
+        run: |
+          curl -sL "https://github.com/blasrodri/truth/releases/latest/download/truth-x86_64-unknown-linux-musl.tar.gz" | tar xz
+          sudo install truth-*/truth /usr/local/bin/
+
+      - name: Stage the PR as a working-tree diff vs base
+        run: |
+          git fetch origin "${{ github.event.pull_request.base.ref }}"
+          git reset --soft "origin/${{ github.event.pull_request.base.ref }}"
+
+      - name: Index the repo
+        run: |
+          truth init
+          truth index .
+
+      - name: Fact-check the PR description
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if [ -z "$PR_BODY" ]; then
+            echo "PR has no description — nothing to fact-check."
+            echo "skip=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          truth verify-turn "$PR_BODY" --json > verdict.json
+          truth verify-turn "$PR_BODY" | tee verdict.txt
+
+      - name: Comment the verdict
+        if: env.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '### truth fact-check'
+            echo
+            echo '```'
+            cat verdict.txt
+            echo '```'
+            echo
+            echo '_Claims checked against the PR diff and the indexed code. `Refused` = unverifiable, not confirmed._'
+          } > comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md
+
+      # Optional gate: fail the job when the description contradicts the diff.
+      # - name: Gate on contradictions
+      #   if: env.skip != 'true'
+      #   run: |
+      #     test "$(jq '.summary.contradicted' verdict.json)" = "0"

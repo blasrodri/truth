@@ -22,6 +22,10 @@ struct Re {
     named_const: Regex,
     symbol: Regex,
     symbol_post: Regex,
+    file_path: Regex,
+    renamed: Regex,
+    change_count: Regex,
+    from_to: Regex,
 }
 
 fn res() -> &'static Re {
@@ -35,11 +39,31 @@ fn res() -> &'static Re {
         timeout: Regex::new(r"(?i)timeout[^0-9]{0,20}(\d+)").unwrap(),
         env_var: Regex::new(r"\b([A-Z][A-Z0-9_]{2,})\b").unwrap(),
         // A named constant claim: "MAX_RETRIES is 5", "MaxConns = 10",
-        // "DEFAULT_PORT equals 8080". Captures (name, value).
+        // "DEFAULT_PORT equals 8080", "changed MAX_RETRIES from 3 to 5",
+        // "bumped MAX_CONNS to 10". The from→to alternative must precede the
+        // bare "to" so the POST-change value is captured. Captures (name, value).
         named_const: Regex::new(
-            r"\b([A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+|[A-Z][A-Z0-9_]{2,})\b\s*(?:is|=|==|equals|set to|of)\s*(\d+)",
+            r"\b([A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+|[A-Z][A-Z0-9_]{2,})\b\s*(?:is|=|==|equals|set to|of|from\s+\d+\s*[a-z]{0,8}\s+to|to)\s*(\d+)",
         )
         .unwrap(),
+        // A file-path token with a real extension: "src/auth.rs", "auth.rs",
+        // "docker-compose.yml". The extension must start with a letter so
+        // version numbers ("3.5") don't match.
+        file_path: Regex::new(r"\b((?:[\w.-]+/)*[\w-][\w.-]*\.[A-Za-z][A-Za-z0-9]{0,7})\b")
+            .unwrap(),
+        // "renamed X to Y" (optionally "renamed the X function to Y").
+        renamed: Regex::new(
+            r"(?i)\brenam(?:ed|es|e|ing)\s+(?:the\s+)?`?([A-Za-z_/][\w/.\-]*)`?(?:\s+(?:function|func|fn|method|struct|class|type|helper|handler|variable|field|route|endpoint))?\s+to\s+`?([A-Za-z_/][\w/.\-]*)`?",
+        )
+        .unwrap(),
+        // "updated all 4 call sites (of X)" / "fixed 3 occurrences of Y".
+        change_count: Regex::new(
+            r"(?i)\b(?:all\s+)?(\d+)\s+(?:call\s?-?sites?|occurrences?|usages?|references?|places)\b(?:\s+of\s+(?:the\s+)?`?([\w/.\-]+)`?)?",
+        )
+        .unwrap(),
+        // "from 3 to 5" / "from 10s to 30s" — the claimed POST-change value is
+        // the second number, not the first one a generic capture would grab.
+        from_to: Regex::new(r"(?i)\bfrom\s+(\d+)\s*[a-z]{0,8}\s+to\s+(\d+)").unwrap(),
         // Symbol claim, kind-FIRST: "function validate_token", "struct Foo",
         // "the parse_legacy helper" → wait, that's name-first; see symbol_post.
         // This one: KIND then NAME, e.g. "function validate_token".
@@ -100,6 +124,146 @@ impl ClaimExtractor for RegexExtractor {
             }
         }
 
+        // Command success: "tests pass", "the build compiles", "clippy is
+        // clean". Decided from recorded command receipts, never from prose —
+        // so extraction only needs the command KIND. Bare "I ran the tests"
+        // (no success assertion) stays unverifiable by design, and admissions
+        // of failure are not extracted (nothing to catch).
+        if let Some(kind) = command_kind(&lower) {
+            return claim(
+                ClaimType::CommandSucceeded,
+                Some(kind.to_string()),
+                Some("command_succeeded"),
+                ClaimOperator::Exists,
+                None,
+                None,
+                None,
+                0.8,
+            );
+        }
+
+        // Scope claim: "I only changed src/auth.rs" / "only touched the
+        // `parser`". Needs a concrete subject (path or backticked token) —
+        // "only changed the error message" is too vague to scope-check and
+        // falls through to refusal.
+        let only_phrasing = lower.contains("only ")
+            && ["changed", "touched", "modified", "edited", "updated"]
+                .iter()
+                .any(|v| lower.contains(v))
+            && !lower.contains("call site");
+        if only_phrasing && !has_value_pattern(text, &lower) {
+            if let Some(subject) = file_subject(text).or_else(|| backticked(text)) {
+                return claim(
+                    ClaimType::OnlyChanged,
+                    Some(subject),
+                    Some("only_changed"),
+                    ClaimOperator::Exists,
+                    None,
+                    None,
+                    None,
+                    0.78,
+                );
+            }
+        }
+
+        // Rename claim: "I renamed parse_legacy to parse_v2". Both names are
+        // captured; the verdict needs the old name gone AND the new one added.
+        if let Some(c) = r.renamed.captures(text) {
+            let old = c[1].to_string();
+            let new = c[2].to_string();
+            if !is_stopword(&old) && !is_stopword(&new) {
+                return StructuredClaim {
+                    is_checkable: true,
+                    claim_type: ClaimType::SymbolRenamed,
+                    subject: Some(old),
+                    predicate: Some("renamed".into()),
+                    operator: ClaimOperator::Exists,
+                    value: Some(serde_json::json!({ "to": new })),
+                    unit: None,
+                    time_window: Some("recent".into()),
+                    environment: None,
+                    confidence: 0.78,
+                    needs_clarification: false,
+                    clarification_question: None,
+                };
+            }
+        }
+
+        // Change-count claim: "updated all 4 call sites of parse_config".
+        // Without a concrete subject there is nothing to count against, so it
+        // falls through to refusal.
+        if let Some(c) = r.change_count.captures(text) {
+            let n: i64 = c[1].parse().unwrap_or_default();
+            let subject = c
+                .get(2)
+                .map(|m| m.as_str().to_string())
+                .or_else(|| backticked(text));
+            if let Some(subject) = subject {
+                return claim(
+                    ClaimType::ChangeCount,
+                    Some(subject),
+                    Some("change_count"),
+                    ClaimOperator::Equals,
+                    Some(n.into()),
+                    Some("sites"),
+                    None,
+                    0.72,
+                );
+            }
+        }
+
+        // File-change claim: "I modified src/auth.rs", "created tests/foo.rs",
+        // "deleted old_config.toml". Needs a dot-extension path token so HTTP
+        // routes ("/v1/refund") never land here; skipped when the sentence
+        // also carries a pure route or a value claim (those are more specific).
+        if !has_pure_route(text) && !has_value_pattern(text, &lower) {
+            if let Some(path) = file_subject(text) {
+                let expected = if ["deleted", "removed", "dropped"]
+                    .iter()
+                    .any(|v| lower.contains(v))
+                {
+                    Some("deleted")
+                } else if lower.contains("created")
+                    || lower.contains("new file")
+                    || lower.contains("added")
+                {
+                    Some("added")
+                } else if [
+                    "modified",
+                    "edited",
+                    "updated",
+                    "changed",
+                    "touched",
+                    "rewrote",
+                    "tweaked",
+                    "refactored",
+                ]
+                .iter()
+                .any(|v| lower.contains(v))
+                {
+                    Some("modified")
+                } else {
+                    None
+                };
+                if let Some(expected) = expected {
+                    return claim(
+                        ClaimType::FileChanged,
+                        Some(path),
+                        Some("file_changed"),
+                        if expected == "deleted" {
+                            ClaimOperator::NotExists
+                        } else {
+                            ClaimOperator::Exists
+                        },
+                        Some(expected.into()),
+                        None,
+                        None,
+                        0.8,
+                    );
+                }
+            }
+        }
+
         // Dependency: "uses tokio", "added serde as a dependency", "depends on
         // X", "the X crate/package". The subject is a bare package token (not a
         // /path). Gated so route/usage claims above win first.
@@ -110,7 +274,7 @@ impl ClaimExtractor for RegexExtractor {
             || lower.contains(" package")
             || lower.contains("uses ")
             || lower.contains("use the ");
-        if dep_phrasing && Self::first_route(text).is_none() {
+        if dep_phrasing && !has_pure_route(text) {
             if let Some(dep) = dependency_name(text, &lower) {
                 let expects_absent = lower.contains("no longer")
                     || lower.contains("removed")
@@ -154,9 +318,11 @@ impl ClaimExtractor for RegexExtractor {
             );
         }
 
-        // Retry count: "we retry payments 3 times"
+        // Retry count: "we retry payments 3 times", "changed retries from 3 to
+        // 5" (a from→to phrasing claims the SECOND number as the new state).
         if let Some(c) = r.retry.captures(&lower) {
-            let n: i64 = c[1].parse().unwrap_or_default();
+            let n: i64 =
+                post_change_target(&lower).unwrap_or_else(|| c[1].parse().unwrap_or_default());
             return claim(
                 ClaimType::RetryCount,
                 Some("retry_count".into()),
@@ -171,7 +337,8 @@ impl ClaimExtractor for RegexExtractor {
 
         // Timeout value
         if let Some(c) = r.timeout.captures(&lower) {
-            let n: i64 = c[1].parse().unwrap_or_default();
+            let n: i64 =
+                post_change_target(&lower).unwrap_or_else(|| c[1].parse().unwrap_or_default());
             return claim(
                 ClaimType::TimeoutValue,
                 Some("timeout".into()),
@@ -186,7 +353,8 @@ impl ClaimExtractor for RegexExtractor {
 
         // Port / config value: "runs on port 8080"
         if let Some(c) = r.port.captures(&lower) {
-            let n: i64 = c[1].parse().unwrap_or_default();
+            let n: i64 =
+                post_change_target(&lower).unwrap_or_else(|| c[1].parse().unwrap_or_default());
             return claim(
                 ClaimType::ConfigValue,
                 Some("port".into()),
@@ -202,8 +370,9 @@ impl ClaimExtractor for RegexExtractor {
         // Symbol claim: "I added function validate_token", "removed the
         // parse_legacy helper", "renamed OldClient", "method handleClick()".
         // Requires a kind-word (function/method/struct/...) so we don't grab
-        // arbitrary nouns. Skips claims with a /path (those are routes).
-        if Self::first_route(text).is_none() {
+        // arbitrary nouns. Skips claims with a pure /path (those are routes) —
+        // a file-path mention ("in src/auth.rs") doesn't suppress it.
+        if !has_pure_route(text) {
             // Reject articles / verbs / filler that are never symbol names.
             const NOT_SYMBOL: &[&str] = &[
                 "the", "a", "an", "this", "that", "it", "new", "old", "my", "our", "their", "its",
@@ -275,8 +444,8 @@ impl ClaimExtractor for RegexExtractor {
         // Named constant value: "MAX_RETRIES is 5", "MaxConns = 10". Keyed by the
         // constant's own name so it resolves against the indexed constant. Runs
         // after the specific port/retry/timeout handlers so those win their
-        // dedicated phrasings. Skips a leading /path so route claims aren't eaten.
-        if Self::first_route(text).is_none() {
+        // dedicated phrasings. Skips a pure /path so route claims aren't eaten.
+        if !has_pure_route(text) {
             if let Some(c) = r.named_const.captures(text) {
                 let name = c[1].to_string();
                 let n: i64 = c[2].parse().unwrap_or_default();
@@ -362,6 +531,95 @@ impl ClaimExtractor for RegexExtractor {
             "I couldn't identify a concrete, checkable claim. Try quoting a specific route, value, or error.",
         )
     }
+}
+
+/// "from 3 to 5" phrasing: the claimed POST-change value is the second number.
+fn post_change_target(lower: &str) -> Option<i64> {
+    res()
+        .from_to
+        .captures(lower)
+        .and_then(|c| c[2].parse().ok())
+}
+
+/// Match "tests pass" / "the build compiles" / "clippy is clean" phrasings to
+/// a receipt kind. The success word must FOLLOW the command word so "I added a
+/// passing test" (about a test file, not the suite) doesn't match. Admissions
+/// of failure are never extracted — there is nothing to catch.
+fn command_kind(lower: &str) -> Option<&'static str> {
+    static K: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
+    let pats = K.get_or_init(|| {
+        vec![
+            (
+                Regex::new(r"\b(?:tests?|test suite|suite|specs?|checks?)\s+(?:are\s+|all\s+|now\s+|still\s+)*(?:pass(?:es|ed|ing)?\b|green\b|succeed)").unwrap(),
+                "test",
+            ),
+            (
+                Regex::new(r"\b(?:build|compilation)\s+(?:now\s+|still\s+|is\s+)*(?:succeed(?:s|ed)?|pass(?:es|ed)?|compiles|works|green|clean)").unwrap(),
+                "build",
+            ),
+            (
+                Regex::new(r"\b(?:it|everything|the project|the crate|the code|the workspace)\s+(?:now\s+|still\s+|all\s+)*compiles\b").unwrap(),
+                "build",
+            ),
+            (
+                Regex::new(r"\b(?:clippy|lint(?:er|ing)?)\s+(?:is\s+|now\s+|still\s+)*(?:clean|pass(?:es|ed)?|green|happy)").unwrap(),
+                "lint",
+            ),
+            (
+                Regex::new(r"\b(?:typecheck(?:ing)?|type[- ]check(?:s|ing)?|tsc)\s+(?:is\s+|now\s+)*(?:pass(?:es|ed)?|clean|green)").unwrap(),
+                "typecheck",
+            ),
+        ]
+    });
+    if lower.contains("fail") {
+        return None;
+    }
+    pats.iter()
+        .find(|(re, _)| re.is_match(lower))
+        .map(|(_, k)| *k)
+}
+
+/// First file-path token (dot-extension required) in the text.
+fn file_subject(text: &str) -> Option<String> {
+    res().file_path.captures(text).map(|c| c[1].to_string())
+}
+
+/// First `backticked` token, if short enough to be a subject.
+fn backticked(text: &str) -> Option<String> {
+    let start = text.find('`')?;
+    let rest = &text[start + 1..];
+    let end = rest.find('`')?;
+    let token = rest[..end].trim();
+    (!token.is_empty() && token.len() <= 80).then(|| token.to_string())
+}
+
+/// Any route-regex hit whose last segment has NO dot-extension — i.e. an HTTP
+/// path like `/v1/refund`, not a file path like `src/auth.rs`.
+fn has_pure_route(text: &str) -> bool {
+    res().route.captures_iter(text).any(|c| {
+        let last = c[1].rsplit('/').next().unwrap_or("");
+        !last.contains('.')
+    })
+}
+
+/// Whether a more specific value claim (constant/retry/timeout/port) is present
+/// — those handlers must win over file/scope claims for sentences like
+/// "updated MAX_RETRIES to 5 in src/config.rs".
+fn has_value_pattern(text: &str, lower: &str) -> bool {
+    let r = res();
+    r.named_const.is_match(text)
+        || r.retry.is_match(lower)
+        || r.timeout.is_match(lower)
+        || r.port.is_match(lower)
+}
+
+/// Words that are never symbol/file names in a rename claim.
+fn is_stopword(token: &str) -> bool {
+    const STOP: &[&str] = &[
+        "the", "a", "an", "this", "that", "it", "new", "old", "my", "our", "their", "its", "some",
+        "any", "no", "is", "was", "to", "from",
+    ];
+    STOP.contains(&token.to_ascii_lowercase().as_str())
 }
 
 /// Pull a likely package name from a dependency claim. Looks for the token
@@ -575,5 +833,136 @@ mod tests {
     fn unknown_for_vague() {
         let c = RegexExtractor.extract("I think the system is good.");
         assert!(!c.is_checkable);
+    }
+
+    // ---- diff-native claim family ----------------------------------------
+
+    #[test]
+    fn extracts_file_changed_claims() {
+        let m = RegexExtractor.extract("I modified src/auth.rs");
+        assert_eq!(m.claim_type, ClaimType::FileChanged);
+        assert_eq!(m.subject.as_deref(), Some("src/auth.rs"));
+        assert_eq!(m.value, Some("modified".into()));
+
+        let a = RegexExtractor.extract("created tests/foo_test.rs");
+        assert_eq!(a.claim_type, ClaimType::FileChanged);
+        assert_eq!(a.value, Some("added".into()));
+
+        let d = RegexExtractor.extract("I deleted old_config.toml");
+        assert_eq!(d.claim_type, ClaimType::FileChanged);
+        assert_eq!(d.operator, ClaimOperator::NotExists);
+        assert_eq!(d.value, Some("deleted".into()));
+    }
+
+    #[test]
+    fn route_claims_still_win_over_file_claims() {
+        // A pure HTTP route in the sentence keeps it a route claim even when a
+        // file path is also mentioned.
+        let c = RegexExtractor.extract("I added the /v1/refund endpoint in src/routes.rs");
+        assert_eq!(c.claim_type, ClaimType::RouteExists);
+        assert_eq!(c.subject.as_deref(), Some("/v1/refund"));
+    }
+
+    #[test]
+    fn value_claims_win_over_file_claims() {
+        // "updated X to 5 in file.rs" is a value claim, not a file claim.
+        // (A retry-flavored name like MAX_RETRIES routes to the dedicated
+        // RetryCount handler instead — also a value claim, also fine.)
+        let c = RegexExtractor.extract("updated MAX_CONNS to 16 in src/config.rs");
+        assert_eq!(c.claim_type, ClaimType::ConfigValue);
+        assert_eq!(c.subject.as_deref(), Some("MAX_CONNS"));
+        assert_eq!(c.expected_number(), Some(16.0));
+
+        let r = RegexExtractor.extract("updated MAX_RETRIES to 5 in src/config.rs");
+        assert_eq!(r.claim_type, ClaimType::RetryCount);
+        assert_eq!(r.expected_number(), Some(5.0));
+    }
+
+    #[test]
+    fn extracts_only_changed_scope_claim() {
+        let c = RegexExtractor.extract("I only changed src/auth.rs");
+        assert_eq!(c.claim_type, ClaimType::OnlyChanged);
+        assert_eq!(c.subject.as_deref(), Some("src/auth.rs"));
+
+        // Backticked module subject works too.
+        let m = RegexExtractor.extract("I only touched the `parser` module");
+        assert_eq!(m.claim_type, ClaimType::OnlyChanged);
+        assert_eq!(m.subject.as_deref(), Some("parser"));
+
+        // Vague scope claims refuse rather than guess.
+        let v = RegexExtractor.extract("I only changed the error message");
+        assert_ne!(v.claim_type, ClaimType::OnlyChanged);
+    }
+
+    #[test]
+    fn extracts_rename_claim() {
+        let c = RegexExtractor.extract("I renamed parse_legacy to parse_v2");
+        assert_eq!(c.claim_type, ClaimType::SymbolRenamed);
+        assert_eq!(c.subject.as_deref(), Some("parse_legacy"));
+        assert_eq!(
+            c.value
+                .as_ref()
+                .and_then(|v| v.get("to"))
+                .and_then(|v| v.as_str()),
+            Some("parse_v2")
+        );
+
+        // With a kind word in the middle.
+        let k = RegexExtractor.extract("renamed the old_client struct to NewClient");
+        assert_eq!(k.claim_type, ClaimType::SymbolRenamed);
+        assert_eq!(k.subject.as_deref(), Some("old_client"));
+    }
+
+    #[test]
+    fn extracts_change_count_claim() {
+        let c = RegexExtractor.extract("updated all 4 call sites of parse_config");
+        assert_eq!(c.claim_type, ClaimType::ChangeCount);
+        assert_eq!(c.subject.as_deref(), Some("parse_config"));
+        assert_eq!(c.expected_number(), Some(4.0));
+
+        // No subject → nothing to count against → refused.
+        let v = RegexExtractor.extract("updated all 4 call sites");
+        assert!(!v.is_checkable);
+    }
+
+    #[test]
+    fn from_to_phrasing_claims_the_post_change_value() {
+        let r = RegexExtractor.extract("I changed retries from 3 to 5");
+        assert_eq!(r.claim_type, ClaimType::RetryCount);
+        assert_eq!(r.expected_number(), Some(5.0));
+
+        let t = RegexExtractor.extract("bumped the timeout from 10 to 30");
+        assert_eq!(t.claim_type, ClaimType::TimeoutValue);
+        assert_eq!(t.expected_number(), Some(30.0));
+
+        let c = RegexExtractor.extract("changed MAX_CONNS from 8 to 16");
+        assert_eq!(c.claim_type, ClaimType::ConfigValue);
+        assert_eq!(c.expected_number(), Some(16.0));
+    }
+
+    #[test]
+    fn extracts_command_success_claims() {
+        for (text, kind) in [
+            ("tests pass", "test"),
+            ("the test suite passes", "test"),
+            ("all tests are passing", "test"),
+            ("the build compiles", "build"),
+            ("it compiles", "build"),
+            ("clippy is clean", "lint"),
+        ] {
+            let c = RegexExtractor.extract(text);
+            assert_eq!(c.claim_type, ClaimType::CommandSucceeded, "{text}");
+            assert_eq!(c.subject.as_deref(), Some(kind), "{text}");
+        }
+    }
+
+    #[test]
+    fn command_claims_require_success_after_command_word() {
+        // About a test FILE, not the suite's status.
+        let c = RegexExtractor.extract("I added a passing test for the parser");
+        assert_ne!(c.claim_type, ClaimType::CommandSucceeded);
+        // Admission of failure is not a claim to catch.
+        let f = RegexExtractor.extract("tests fail right now");
+        assert_ne!(f.claim_type, ClaimType::CommandSucceeded);
     }
 }

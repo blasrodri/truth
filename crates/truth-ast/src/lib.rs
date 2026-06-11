@@ -1,12 +1,56 @@
-//! `truth-ast` — tree-sitter-based extraction (spike: Rust only).
+//! `truth-ast` — tree-sitter-based extraction (Rust, TypeScript, Python, Go).
 //!
 //! Structural extraction that regex-over-lines cannot do: routes matched by AST
-//! shape (a method call with a string-literal `/path` argument), and numeric
-//! constants carrying name + value + type + visibility. See
+//! shape (a method call / decorator with a string-literal `/path` argument),
+//! numeric constants carrying name + value, and real symbol definitions. See
 //! `docs/TREESITTER_SPIKE.md`.
+
+mod go;
+mod python;
+mod typescript;
 
 use anyhow::{Context, Result};
 use tree_sitter::{Parser, Query, QueryCursor};
+
+/// Languages with AST extraction support. Each maps to a tree-sitter grammar
+/// and a per-language extractor producing the same `AstFact` shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lang {
+    Rust,
+    /// `.ts` and plain JS (`.js`/`.mjs`/`.cjs`) — the TypeScript grammar is a
+    /// superset of JS, so one grammar covers both.
+    TypeScript,
+    /// `.tsx`/`.jsx` — JSX needs the dedicated TSX grammar variant.
+    Tsx,
+    Python,
+    Go,
+}
+
+impl Lang {
+    /// Map a file extension (lowercase, no dot) to its AST language, if
+    /// supported. This is the indexer's "is this file AST-supported?" gate.
+    pub fn from_extension(ext: &str) -> Option<Lang> {
+        match ext {
+            "rs" => Some(Lang::Rust),
+            "ts" | "js" | "mjs" | "cjs" => Some(Lang::TypeScript),
+            "tsx" | "jsx" => Some(Lang::Tsx),
+            "py" => Some(Lang::Python),
+            "go" => Some(Lang::Go),
+            _ => None,
+        }
+    }
+}
+
+/// Extract route + constant + symbol facts from source in any supported language.
+pub fn extract(lang: Lang, source: &str) -> Result<Vec<AstFact>> {
+    match lang {
+        Lang::Rust => extract_rust(source),
+        Lang::TypeScript => typescript::extract(source, false),
+        Lang::Tsx => typescript::extract(source, true),
+        Lang::Python => python::extract(source),
+        Lang::Go => go::extract(source),
+    }
+}
 
 /// A structurally-extracted fact, intentionally shaped like the indexer's
 /// `Extracted` so it can plug into the existing pipeline.
@@ -59,11 +103,11 @@ pub fn extract_rust(source: &str) -> Result<Vec<AstFact>> {
     Ok(out)
 }
 
-fn line_of(node: tree_sitter::Node) -> u32 {
+pub(crate) fn line_of(node: tree_sitter::Node) -> u32 {
     (node.start_position().row + 1) as u32
 }
 
-fn node_text<'a>(node: tree_sitter::Node, bytes: &'a [u8]) -> &'a str {
+pub(crate) fn node_text<'a>(node: tree_sitter::Node, bytes: &'a [u8]) -> &'a str {
     node.utf8_text(bytes).unwrap_or("")
 }
 
@@ -87,7 +131,7 @@ fn handler_ident(node: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
 }
 
 /// Collect a node's named children into a Vec (avoids cursor-lifetime issues).
-fn named_children(node: tree_sitter::Node) -> Vec<tree_sitter::Node> {
+pub(crate) fn named_children(node: tree_sitter::Node) -> Vec<tree_sitter::Node> {
     let mut w = node.walk();
     node.named_children(&mut w).collect()
 }
@@ -236,7 +280,7 @@ fn extract_functions(root: &tree_sitter::Node, bytes: &[u8], out: &mut Vec<AstFa
     Ok(())
 }
 
-fn predicate_for(name: &str) -> String {
+pub(crate) fn predicate_for(name: &str) -> String {
     let l = name.to_ascii_lowercase();
     if l.contains("retr") {
         "retry_count".into()
@@ -249,9 +293,13 @@ fn predicate_for(name: &str) -> String {
     }
 }
 
-fn parse_int_lit(raw: &str) -> Option<i64> {
+pub(crate) fn parse_int_lit(raw: &str) -> Option<i64> {
     if let Some(h) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
         i64::from_str_radix(h, 16).ok()
+    } else if let Some(o) = raw.strip_prefix("0o").or_else(|| raw.strip_prefix("0O")) {
+        i64::from_str_radix(o, 8).ok()
+    } else if let Some(b) = raw.strip_prefix("0b").or_else(|| raw.strip_prefix("0B")) {
+        i64::from_str_radix(b, 2).ok()
     } else {
         raw.parse::<i64>().ok()
     }

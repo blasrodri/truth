@@ -79,6 +79,33 @@ enum Command {
     },
     /// Check GitHub for a newer truth release (notify only — never downloads).
     UpgradeCheck,
+    /// Run a command and record a receipt (exit code, time, output digest) so
+    /// success claims like "tests pass" become verifiable. Exits with the
+    /// command's own exit code.
+    Run {
+        /// The command and its args: `truth run -- cargo test`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        cmd: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Record a receipt for a command that already ran elsewhere (agent
+    /// hooks, CI). Never executes anything.
+    RecordRun {
+        /// The command line that ran.
+        #[arg(long)]
+        command: String,
+        #[arg(long)]
+        exit_code: i64,
+        /// test|build|lint|typecheck|other (inferred from the command if omitted).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Repo root whose .truth store records it (defaults to the discovered root).
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Fact-check an AI agent's message about its own work (multi-claim).
     VerifyTurn {
         /// What the agent said, e.g. "I added /v1/refund and bumped the timeout to 30s".
@@ -227,10 +254,26 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Agent-harness hooks: make verification a gate the agent can't skip.
+    Hook {
+        #[command(subcommand)]
+        cmd: HookCommand,
+    },
     /// Database commands.
     Db {
         #[command(subcommand)]
         cmd: DbCommand,
+    },
+    /// The lie ledger: claims checked, contradictions caught, runs recorded.
+    Stats {
+        /// Time window, e.g. 7d, 24h, 30d.
+        #[arg(long)]
+        window: Option<String>,
+        /// Aggregate across all repos registered by `truth init`.
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Read or change truth.toml settings (extractor, include/exclude, llm, ...).
     Settings {
@@ -245,6 +288,19 @@ enum Command {
 enum DbCommand {
     /// Run SQLite migrations.
     Migrate,
+}
+
+#[derive(Subcommand)]
+enum HookCommand {
+    /// Register truth's Stop + PostToolUse hooks in Claude Code settings
+    /// (.claude/settings.json; --user for ~/.claude/settings.json).
+    Install {
+        /// Install in ~/.claude/settings.json instead of the project settings.
+        #[arg(long)]
+        user: bool,
+    },
+    /// The hook entry point Claude Code invokes (reads the event from stdin).
+    Claude,
 }
 
 #[derive(Subcommand)]
@@ -274,6 +330,17 @@ fn main() -> ExitCode {
     let _dhat = dhat::Profiler::new_heap();
 
     let cli = Cli::parse();
+
+    // `run` propagates the child command's exit code.
+    if let Command::Run { cmd, json } = &cli.command {
+        return match truth_cli::run::run(cmd, *json) {
+            Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
+            Err(e) => {
+                eprintln!("Error: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     // `ci` owns its exit code policy (0 pass / 1 fail / 2 operational error).
     if let Command::Ci {
@@ -327,6 +394,14 @@ fn run(command: Command) -> anyhow::Result<()> {
             json,
         } => commands::check(&claim, local_log.as_deref(), json),
         Command::UpgradeCheck => commands::upgrade_check(false),
+        Command::Run { .. } => unreachable!("run handled before run()"),
+        Command::RecordRun {
+            command,
+            exit_code,
+            kind,
+            repo,
+            json,
+        } => truth_cli::run::record(&command, exit_code, kind.as_deref(), repo.as_deref(), json),
         Command::VerifyTurn {
             message,
             repo,
@@ -398,11 +473,18 @@ fn run(command: Command) -> anyhow::Result<()> {
             out,
         } => report::report(&claim_file, local_log.as_deref(), &format, out.as_deref()),
         Command::Diff { old, new, json } => diff::diff(&old, &new, json),
+        Command::Stats { window, all, json } => {
+            truth_cli::stats::stats(window.as_deref(), all, json)
+        }
         Command::Ci { .. } => unreachable!("ci handled before run()"),
         Command::Settings { cmd } => match cmd {
             SettingsCommand::List { json } => settings::list(json),
             SettingsCommand::Get { key, json } => settings::get(&key, json),
             SettingsCommand::Set { key, value, json } => settings::set(&key, &value, json),
+        },
+        Command::Hook { cmd } => match cmd {
+            HookCommand::Install { user } => truth_cli::hook::install(user),
+            HookCommand::Claude => truth_cli::hook::claude(),
         },
         Command::Db { cmd } => match cmd {
             DbCommand::Migrate => commands::db_migrate(),

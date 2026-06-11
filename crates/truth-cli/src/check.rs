@@ -144,7 +144,10 @@ pub fn run_check(
     // whether the symbol is present. The diff (below) overrides for this-turn
     // changes.
     let mut symbol_status: Option<String> = None;
-    if matches!(claim.claim_type, truth_core::claim::ClaimType::SymbolExists) {
+    if matches!(
+        claim.claim_type,
+        truth_core::claim::ClaimType::SymbolExists | truth_core::claim::ClaimType::SymbolRenamed
+    ) {
         if let Some(subject) = claim.subject.as_deref() {
             // Prefer AST `symbol_exists` definitions: a real `fn`/`struct`/...
             // declaration, never fooled by the name in a comment or string. If the
@@ -218,6 +221,58 @@ pub fn run_check(
         }
     }
 
+    // Diff-native claims: what files this turn touched, the scope of the
+    // change, line counts, renames. All decided from the working-tree diff —
+    // no index needed, and an empty diff is reported as "unknown (already
+    // committed?)" by the verdict rules, never as a pass.
+    gather_diff_claim_evidence(
+        config,
+        &claim,
+        &mut repo_items,
+        &mut evidence_lines,
+        &mut evidence_json,
+    )?;
+
+    // Command receipts: "tests pass" is decided from the most recent recorded
+    // run of that kind, and only counts when it postdates the last working-tree
+    // edit — a green run from before your changes proves nothing.
+    if claim.claim_type == truth_core::claim::ClaimType::CommandSucceeded {
+        if let Some(kind) = claim.subject.as_deref() {
+            if let Some(run) = truth_db::repo::latest_run_for_kind(conn, kind)? {
+                let fresh = crate::run::last_edit_time(&config.repo.root)
+                    .map(|edit| run.finished_at >= edit)
+                    .unwrap_or(true);
+                let when = fmt_ts(run.finished_at);
+                evidence_lines.insert(
+                    0,
+                    format!(
+                        "run: `{}` exited {} at {}{}",
+                        run.command,
+                        run.exit_code,
+                        when,
+                        if fresh {
+                            ""
+                        } else {
+                            " (BEFORE the last edit — stale)"
+                        }
+                    ),
+                );
+                evidence_json.insert(
+                    0,
+                    EvidenceJson {
+                        source: "run".into(),
+                        kind: "command_receipt".into(),
+                        subject: Some(run.command.clone()),
+                        value: Some(run.exit_code.into()),
+                        unit: None,
+                        citation: Some(format!("recorded {when}")),
+                    },
+                );
+                repo_items.insert(0, receipt_item(&run, fresh));
+            }
+        }
+    }
+
     let mut decision = decide(&VerdictInput {
         claim: &claim,
         items: &repo_items,
@@ -268,6 +323,160 @@ pub fn run_check(
 
 fn default_service(config: &Config) -> Option<&str> {
     config.loki.labels.get("service").map(String::as_str)
+}
+
+/// A `command_receipt` evidence item from a recorded run. `fresh` = the run
+/// finished at-or-after the last working-tree edit.
+fn receipt_item(run: &truth_core::models::Run, fresh: bool) -> EvidenceItem {
+    EvidenceItem {
+        id: new_id(),
+        span_id: String::new(),
+        evidence_type: EvidenceType::Observation,
+        subject_text: Some(run.kind.clone()),
+        subject_concept_id: None,
+        predicate: Some("command_receipt".into()),
+        object_text: None,
+        value_json: Some(serde_json::json!({ "exit_code": run.exit_code })),
+        unit: None,
+        confidence: 0.95,
+        authority: Authority::RuntimeLogs,
+        valid_from: None,
+        valid_to: None,
+        extraction_method: ExtractionMethod::Deterministic,
+        metadata_json: serde_json::json!({
+            "command": run.command,
+            "exit_code": run.exit_code,
+            "ran_at": run.finished_at,
+            "fresh": fresh,
+        }),
+    }
+}
+
+/// Attach working-tree-diff evidence for the diff-native claim types
+/// (FileChanged / OnlyChanged / ChangeCount / SymbolRenamed). Cheap: one
+/// `git diff --name-status` plus at most two content scans, only for these
+/// claim types.
+fn gather_diff_claim_evidence(
+    config: &Config,
+    claim: &StructuredClaim,
+    repo_items: &mut Vec<EvidenceItem>,
+    evidence_lines: &mut Vec<String>,
+    evidence_json: &mut Vec<EvidenceJson>,
+) -> Result<()> {
+    use truth_core::claim::ClaimType;
+    match claim.claim_type {
+        ClaimType::FileChanged | ClaimType::OnlyChanged => {
+            let changes = crate::diff_facts::changed_files(&config.repo.root);
+            if changes.is_empty() {
+                return Ok(());
+            }
+            if let Some(subject) = claim.subject.as_deref() {
+                // Match by suffix/substring so "src/auth.rs" matches a claim of
+                // "auth.rs" and vice versa.
+                if let Some(ch) = changes
+                    .iter()
+                    .find(|c| c.path.contains(subject) || subject.ends_with(c.path.as_str()))
+                {
+                    evidence_lines.insert(
+                        0,
+                        format!(
+                            "diff: `{}` was {} this turn",
+                            ch.path,
+                            ch.status.to_uppercase()
+                        ),
+                    );
+                    evidence_json.insert(
+                        0,
+                        EvidenceJson {
+                            source: "diff".into(),
+                            kind: "file_status".into(),
+                            subject: Some(ch.path.clone()),
+                            value: Some(ch.status.into()),
+                            unit: None,
+                            citation: Some(ch.path.clone()),
+                        },
+                    );
+                    repo_items.insert(0, crate::diff_facts::file_status_item(ch));
+                }
+            }
+            evidence_lines.push(format!("diff: {} file(s) changed vs HEAD", changes.len()));
+            evidence_json.push(EvidenceJson {
+                source: "diff".into(),
+                kind: "diff_files".into(),
+                subject: None,
+                value: Some(changes.len().into()),
+                unit: Some("files".into()),
+                citation: None,
+            });
+            repo_items.push(crate::diff_facts::diff_files_item(&changes));
+        }
+        ClaimType::ChangeCount => {
+            let Some(subject) = claim.subject.as_deref() else {
+                return Ok(());
+            };
+            // Only attach a count when the diff is non-empty — otherwise the
+            // verdict must say "unknown", not "zero".
+            if crate::diff_facts::changed_files(&config.repo.root).is_empty() {
+                return Ok(());
+            }
+            let fact = crate::diff_facts::scan(&config.repo.root, subject)?;
+            evidence_lines.push(format!(
+                "diff: {} added / {} removed line(s) mention `{subject}`",
+                fact.added_hits, fact.removed_hits
+            ));
+            evidence_json.push(EvidenceJson {
+                source: "diff".into(),
+                kind: "diff_hits".into(),
+                subject: Some(subject.to_string()),
+                value: Some(fact.added_hits.into()),
+                unit: Some("lines".into()),
+                citation: fact.file.clone(),
+            });
+            repo_items.push(crate::diff_facts::diff_hits_item(&fact));
+        }
+        ClaimType::SymbolRenamed => {
+            if let Some(old) = claim.subject.as_deref() {
+                let fact = crate::diff_facts::scan(&config.repo.root, old)?;
+                if let Some(item) = fact.as_existence_item() {
+                    evidence_lines.insert(0, fact.evidence_line());
+                    evidence_json.insert(
+                        0,
+                        EvidenceJson {
+                            source: "diff".into(),
+                            kind: "renamed_from".into(),
+                            subject: Some(old.to_string()),
+                            value: fact.present_after().map(|b| b.into()),
+                            unit: None,
+                            citation: fact.file.clone(),
+                        },
+                    );
+                    repo_items.insert(0, item);
+                }
+            }
+            let new_name = claim
+                .value
+                .as_ref()
+                .and_then(|v| v.get("to"))
+                .and_then(|v| v.as_str());
+            if let Some(new_name) = new_name {
+                let fact = crate::diff_facts::scan(&config.repo.root, new_name)?;
+                if let Some(item) = crate::diff_facts::renamed_to_item(&fact) {
+                    evidence_lines.push(fact.evidence_line());
+                    evidence_json.push(EvidenceJson {
+                        source: "diff".into(),
+                        kind: "renamed_to".into(),
+                        subject: Some(new_name.to_string()),
+                        value: fact.present_after().map(|b| b.into()),
+                        unit: None,
+                        citation: fact.file.clone(),
+                    });
+                    repo_items.push(item);
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn log_evidence_json(

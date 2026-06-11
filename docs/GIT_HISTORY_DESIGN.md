@@ -1,6 +1,16 @@
 # Design note: reading git history as an evidence source
 
-## Status quo
+> **Status update (2026-06):** Phase 1 (recency) is built — `truth-git`'s
+> `GitHistory::last_modified` is attached lazily at check time (see
+> `git_recency_for` in `truth-cli/src/check.rs`), shelling out with graceful
+> no-git degradation as proposed below. Separately — and distinct from
+> *history* — the **working-tree diff** is now a first-class evidence source
+> (`truth-cli/src/diff_facts.rs`): changed lines, the `--name-status` file
+> list (rename-aware, untracked files included), powering the
+> FileChanged/OnlyChanged/ChangeCount/SymbolRenamed claim types. Phases 2–4
+> (commit-message grep, targeted blame, deletion detection) remain open.
+
+## Status quo (at time of writing)
 
 `truth` reads only the **working-tree snapshot** at index time. It never reads
 git history. Evidence of this:

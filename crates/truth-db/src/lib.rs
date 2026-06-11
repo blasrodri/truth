@@ -12,7 +12,7 @@ use std::path::Path;
 /// evidence (new claim types, sharper relevance gates, AST changes, ...), so an
 /// index built by an older binary is detected as stale and rebuilt. Stored in
 /// SQLite's `PRAGMA user_version`.
-pub const INDEX_FORMAT_VERSION: i64 = 3;
+pub const INDEX_FORMAT_VERSION: i64 = 4;
 
 /// Read the index-format version stamped on this DB (0 if never stamped).
 pub fn index_format_version(conn: &Connection) -> Result<i64> {
@@ -71,7 +71,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
 
         let check = Check {
             id: "c1".into(),

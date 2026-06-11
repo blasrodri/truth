@@ -32,6 +32,12 @@ pub fn init() -> Result<()> {
     let config = load_config()?;
     let _conn = truth_db::open(&config.database.path)?;
     println!("Initialized database at {}", config.database.path);
+
+    // Register this repo in ~/.truth/registry.json so `truth stats --all` can
+    // aggregate the ledger across repos (stores stay per-repo).
+    if let Ok(cwd) = std::env::current_dir() {
+        crate::stats::register_repo(&cwd);
+    }
     Ok(())
 }
 
@@ -151,6 +157,10 @@ pub fn db_migrate() -> Result<()> {
 pub fn index(path: &str, stats_flag: bool, full: bool, extractor: Option<&str>) -> Result<()> {
     let config = load_config()?;
     let conn = truth_db::open(&config.database.path)?;
+    // The clap default "." means "the truth root", not the process CWD —
+    // running `truth index` from a subdirectory must index the whole repo
+    // into the root's store, not a slice of it into a new one.
+    let path = if path == "." { &config.repo.root } else { path };
     // CLI flag overrides the `[indexer] extractor` config; default is regex.
     let mode = match extractor {
         Some(s) => truth_core::config::ExtractorMode::parse(s)
@@ -295,11 +305,7 @@ pub(crate) fn open_db(config: &Config) -> Result<Connection> {
     })
 }
 
-/// Load `truth.toml`, falling back to defaults if absent.
+/// Load `truth.toml` from the nearest truth root (see `config_util`).
 fn load_config() -> Result<Config> {
-    if Path::new("truth.toml").exists() {
-        Config::load("truth.toml")
-    } else {
-        Ok(Config::from_toml_str("")?)
-    }
+    crate::config_util::load_config()
 }

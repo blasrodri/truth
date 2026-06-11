@@ -42,14 +42,15 @@ impl IndexStats {
     }
 }
 
-/// Full re-index: clear everything and rebuild, regex extractor (the
-/// conservative default). Used by eval/report (fresh in-memory DBs).
+/// Full re-index: clear everything and rebuild with the default extractor
+/// (mixed: AST where supported, regex elsewhere). Used by eval/report (fresh
+/// in-memory DBs).
 pub fn index_repo(
     conn: &Connection,
     cfg: &RepoConfig,
     root_override: Option<&Path>,
 ) -> Result<IndexStats> {
-    index_repo_opts(conn, cfg, root_override, false, ExtractorMode::Regex)
+    index_repo_opts(conn, cfg, root_override, false, ExtractorMode::default())
 }
 
 /// Index with an optional incremental fast-path.
@@ -258,16 +259,20 @@ fn build_from(
         metadata_json: serde_json::json!({ "mtime": wf.mtime, "size": wf.size }),
     };
 
-    // AST route extraction for Rust files when the mode enables it. AST routes
-    // win over regex routes for `.rs`, so we drop regex `route_exists` facts for
-    // these files to avoid duplicate/noisy routes.
-    let is_rust = path.extension().and_then(|e| e.to_str()) == Some("rs");
-    let use_ast_routes = mode.uses_ast() && is_rust;
+    // AST extraction for supported languages (Rust/TS/JS/Python/Go) when the
+    // mode enables it. AST routes win over regex routes for these files, so we
+    // drop regex `route_exists` facts for them to avoid duplicate/noisy routes.
+    let ast_lang = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .and_then(|e| truth_ast::Lang::from_extension(&e));
+    let use_ast_routes = mode.uses_ast() && ast_lang.is_some();
 
     let mut evidence = Vec::new();
 
-    if use_ast_routes {
-        for af in truth_ast::extract_rust(&contents).unwrap_or_default() {
+    if let (true, Some(lang)) = (mode.uses_ast(), ast_lang) {
+        for af in truth_ast::extract(lang, &contents).unwrap_or_default() {
             match af.predicate.as_str() {
                 "route_exists" => evidence.push(ast_route_evidence(&artifact.id, uri, af)),
                 // AST-precise function/type definitions feed SymbolExists claims:
@@ -281,7 +286,7 @@ fn build_from(
 
     let facts = extract::extract_file(path, &contents);
     for fact in facts {
-        // In ast/mixed mode, regex routes for Rust files are superseded by AST.
+        // In ast/mixed mode, regex routes for AST-supported files are superseded by AST.
         if use_ast_routes && fact.predicate == "route_exists" {
             continue;
         }

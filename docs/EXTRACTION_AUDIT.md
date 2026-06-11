@@ -1,9 +1,22 @@
 # Extraction Audit — how naive are we, really?
 
-Status: **very naive.** Evidence-backed below, measured against real repos on
-disk (aptos-core: 6,089 files; aria: Go; kernel-style C). The indexer is now
-fast and thorough at *finding files*; the **extractor is the product's limiting
-factor** and is currently the weakest link by a wide margin.
+> **Status update (2026-06):** several recommendations below have since
+> shipped. The **tree-sitter path (option 4 / phase 3) is built** for Rust,
+> TypeScript/JS/TSX, Python, and Go (`indexer.extractor = ast|mixed`): routes
+> by framework call/decorator node, typed constants, real symbol definitions —
+> the 95%-false-positive route problem is gone in AST mode. A **constant
+> relevance gate** (config-keyword include, hardware-marker veto) cut kernel
+> noise 2.36M → 161k. The claim-extraction side also widened: file-change /
+> only-changed / rename / change-count / command-success claims, and from→to
+> value phrasings. Still open below: feature flags, string/bool config,
+> version requirements, job schedules, `.env` values, test assertions,
+> comments/docstrings, and a real usage graph (the `refs` scan is grep-level).
+
+Status (at time of writing): **very naive.** Evidence-backed below, measured
+against real repos on disk (aptos-core: 6,089 files; aria: Go; kernel-style
+C). The indexer is now fast and thorough at *finding files*; the **extractor
+is the product's limiting factor** and is currently the weakest link by a
+wide margin.
 
 ## TL;DR
 

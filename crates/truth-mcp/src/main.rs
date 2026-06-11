@@ -91,10 +91,14 @@ fn handle_initialize(id: Option<Value>) -> Value {
                  in the `claims` array (one short sentence each) — you parse them more \
                  reliably than truth can re-parse prose, and it's free. Also pass the \
                  raw `message`. truth checks each claim against the repo, the \
-                 working-tree diff, and logs and returns a deterministic, cited \
-                 verdict. Fix or soften any claim it marks `contradicted`; claims it \
-                 marks `refused` are unverifiable (e.g. 'tests pass') — do not treat \
-                 a refusal as confirmation."
+                 working-tree diff, recorded command runs, and logs and returns a \
+                 deterministic, cited verdict. This covers files you edited/created/\
+                 deleted, 'I only changed X' scope claims, renames, values set, routes/\
+                 functions added or removed, and 'tests pass' (verified against runs \
+                 recorded by `truth run -- <cmd>` — run tests through it so the claim \
+                 is checkable). Fix or soften any claim it marks `contradicted`; \
+                 claims it marks `refused` are unverifiable — do not treat a refusal \
+                 as confirmation."
         }),
     )
 }
@@ -105,17 +109,20 @@ fn handle_tools_list(id: Option<Value>) -> Value {
         "description":
             "Fact-check your own claims about code you changed, BEFORE telling the \
              user a change is done — to catch over-claims (wrong values, routes or \
-             functions you said you added/removed). \
+             functions you said you added/removed, files you said you edited, \
+             'I only changed X' scope claims, renames, and 'tests pass'). \
              HOW TO CALL: extract the concrete factual claims from what you're about \
              to say and pass them in `claims` (one short sentence each) — you parse \
              them far more reliably than truth can re-parse prose, and it's free \
              since you're already writing the message. Also pass the raw `message` \
              as a backstop. \
              Each claim is checked against the indexed repo + working-tree git diff \
-             + logs and gets a cited supported / contradicted / refused verdict. \
-             Deterministic: the verdict comes from evidence, not from a model — so \
-             listing a claim can't make it pass. 'refused' means unverifiable, NOT \
-             confirmed.",
+             + recorded command runs + logs and gets a cited supported / \
+             contradicted / refused verdict. 'tests pass' is only supported when a \
+             matching run recorded via `truth run -- <cmd>` exited 0 AFTER your last \
+             edit. Deterministic: the verdict comes from evidence, not from a model \
+             — so listing a claim can't make it pass. 'refused' means unverifiable, \
+             NOT confirmed.",
         "inputSchema": {
             "type": "object",
             "properties": {

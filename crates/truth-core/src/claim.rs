@@ -24,6 +24,20 @@ pub enum ClaimType {
     VersionRequired,
     JobLastSuccess,
     FeatureFlagEnabled,
+    /// A file was created/modified/deleted this turn ("I edited src/auth.rs").
+    /// `value` holds the expected change kind: "added" | "modified" | "deleted".
+    FileChanged,
+    /// Scope claim: ONLY the subject was touched ("I only changed the parser").
+    /// Decided from the working-tree diff file list.
+    OnlyChanged,
+    /// Count claim about the change itself ("updated all 4 call sites of X").
+    /// `value` holds the claimed count.
+    ChangeCount,
+    /// "I renamed X to Y". `subject` is the old name; `value` is `{"to": "Y"}`.
+    SymbolRenamed,
+    /// A command was run and succeeded ("tests pass", "it compiles"). Decided
+    /// from recorded command receipts (`truth run`), never from prose.
+    CommandSucceeded,
     Unknown,
 }
 

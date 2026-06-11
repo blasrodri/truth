@@ -115,7 +115,7 @@ backwards-compatibility).
 - `.rs` files in `ast`/`mixed` mode get routes from `truth-ast` (tagged
   `extraction_method = ast`, with handler + route_builder metadata); the regex
   route facts for those files are dropped to avoid duplicates (AST wins).
-- Constants/env/ports/deps and all non-Rust languages still use regex.
+- Constants/env/ports/deps still use regex.
 - `truth inspect routes --source ast|regex|all`, `truth inspect extraction`, and
   `truth doctor` expose which extractor produced what.
 
@@ -123,4 +123,34 @@ Verified end-to-end: on a file with a real route + an `assert_eq!("/x", …)`
 string, regex returns 2 routes, ast returns 1 (the real one), mixed returns 1
 (AST, no duplicate). Existing eval fixtures still pass; 122 tests, clippy clean.
 
-Next: extend AST to TS/Python/Go routes, then call-site usage.
+Next: call-site usage.
+
+## Extended to TypeScript / Python / Go (Phase 7B)
+
+`truth-ast` now covers four languages, dispatched by extension via
+`truth_ast::Lang::from_extension` (the indexer's "is this file AST-supported?"
+gate): `.rs` (Rust), `.ts`/`.js`/`.mjs`/`.cjs` (TypeScript grammar — a JS
+superset), `.tsx`/`.jsx` (TSX grammar variant for JSX), `.py` (Python), `.go`
+(Go). Same `AstFact` shape, same indexer wiring (AST routes + symbols win over
+regex routes per file in `ast`/`mixed` mode).
+
+Per-language structural rules (precision over recall):
+
+- **TypeScript/JS**: routes are `app.get('/x', handler)`-style member calls;
+  HTTP-verb methods require a handler argument so 1-arg `Map.get("/key")` never
+  counts (`route` may chain with just the path). Constants are module-level
+  `const`/`export const` with integer values only — `let`/`var` and
+  function-local consts are excluded. Symbols: function/class/interface/type/
+  enum declarations plus consts bound to a function value.
+- **Python**: routes come from decorators ONLY (`@app.route("/x")`,
+  `@router.get("/x")` — Flask/FastAPI); plain calls like `d.get("/k")` are
+  structurally rejected, and f-string paths are skipped (not literal). The
+  handler is the decorated `def`'s name. Constants are module-level
+  UPPER_SNAKE assignments (the convention is Python's only constness signal).
+  Symbols: every `def`/`class`.
+- **Go**: routes are `mux.HandleFunc`/`http.Handle`/gin `r.GET`/chi `r.Get`/
+  `Mount`/`Route` registration calls, including Go 1.22 `"GET /path"` ServeMux
+  patterns; a 2nd (handler) argument is required except for `Group`. Constants
+  are package-level `const` including `const ( … )` blocks (literal ints only —
+  `iota`/expressions skipped). Symbols: functions, methods, and `type` specs
+  (struct/interface/alias).

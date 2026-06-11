@@ -90,6 +90,25 @@ pub struct EvidenceQuery {
     pub executed_at: i64,
 }
 
+/// A command receipt: what ran, when, and how it exited. Recorded by
+/// `truth run -- <cmd>` (or `truth record-run` from hooks). The evidence
+/// source that makes "tests pass" checkable instead of refused.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Run {
+    pub id: String,
+    pub command: String,
+    /// "test" | "build" | "lint" | "typecheck" | "other"
+    pub kind: String,
+    pub exit_code: i64,
+    pub started_at: i64,
+    pub finished_at: i64,
+    pub duration_ms: Option<i64>,
+    pub output_digest: Option<String>,
+    /// Short, redacted tail of the combined output (never the raw logs).
+    pub output_tail: Option<String>,
+    pub metadata_json: Value,
+}
+
 /// The final cited answer for a check.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Verdict {
