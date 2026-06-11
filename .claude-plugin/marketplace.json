@@ -1,5 +1,6 @@
 {
   "name": "truth",
+  "description": "truth — the deterministic fact-checker for AI coding agents. Verifies every claim an agent makes about its own work against the real code, git diff, and recorded runs.",
   "owner": {
     "name": "Blas Rodriguez Irizar",
     "url": "https://github.com/blasrodri"

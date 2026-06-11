@@ -1,6 +1,7 @@
 {
   "name": "truth",
   "displayName": "truth — agent fact-checker",
+  "version": "0.3.4",
   "description": "Fact-check every agent turn against the real code, the working-tree git diff, and recorded test runs. Deterministic, cited Supported/Contradicted/Refused verdicts — contradictions block the turn so the agent corrects itself before you read it. Requires the truth binary (the SessionStart hook tells you how to install it if missing).",
   "author": {
     "name": "Blas Rodriguez Irizar",
