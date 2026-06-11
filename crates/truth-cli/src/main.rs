@@ -29,6 +29,9 @@ struct Cli {
 enum Command {
     /// Initialize truth config and database.
     Init,
+    /// One-command onboarding for this repo: init + Claude Code hooks + MCP
+    /// registration. Run it once per repo; everything after is automatic.
+    Setup,
     /// Index repo docs/code/config.
     Index {
         /// Path to index (defaults to ".").
@@ -375,6 +378,7 @@ fn main() -> ExitCode {
 fn run(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Init => commands::init(),
+        Command::Setup => commands::setup(),
         Command::Index {
             path,
             stats,

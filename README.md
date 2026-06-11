@@ -35,12 +35,18 @@ the machine. No LLM, network, or account is required.
 
 ## Install
 
-**One-liner** (downloads the prebuilt binaries for your platform — no Rust
-toolchain needed):
+Two commands, total:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/blasrodri/truth/main/install.sh | sh
+cd your-repo && truth setup
 ```
+
+The first installs the prebuilt binaries for your platform (no Rust
+toolchain) and registers the MCP server with Claude Code if its CLI is
+present. The second is the per-repo onboarding: creates the `.truth` store,
+installs the agent hooks, and double-checks the MCP registration. From the
+next Claude Code session in that repo, every agent turn is fact-checked.
 
 **Or manually** — grab the tarball for your platform from the
 [latest release](https://github.com/blasrodri/truth/releases/latest)
@@ -79,8 +85,10 @@ clients (subject to their approval prompt).
 
 ### Claude Code
 
+`truth setup` (or `install.sh`) registers this for you. Manually:
+
 ```bash
-claude mcp add --scope user truth -- /usr/local/bin/truth-mcp
+claude mcp add --scope user truth -- truth-mcp
 claude mcp list          # verify it connected
 ```
 

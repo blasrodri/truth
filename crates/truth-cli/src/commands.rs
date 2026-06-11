@@ -76,6 +76,44 @@ fn ensure_gitignored(patterns: &[&str]) -> Result<Option<Vec<String>>> {
     Ok(Some(to_add))
 }
 
+/// `truth setup` — the one-command per-repo onboarding: init the store,
+/// install the Claude Code hooks, and register the MCP server (best-effort,
+/// skipped when the `claude` CLI isn't installed).
+pub fn setup() -> Result<()> {
+    init()?;
+    crate::hook::install(false)?;
+    register_mcp_with_claude();
+    println!("\ntruth is set up for this repo. Optional: run tests via `truth run -- <cmd>` so \"tests pass\" claims are verifiable.");
+    Ok(())
+}
+
+/// Register `truth-mcp` with Claude Code (user scope) if the CLI is present
+/// and the server isn't already registered. Never fails setup — prints the
+/// manual command instead.
+fn register_mcp_with_claude() {
+    use std::process::Command;
+    let manual = || {
+        println!("MCP: register manually with `claude mcp add --scope user truth -- truth-mcp` (or your client's mcpServers config).")
+    };
+    match Command::new("claude").args(["mcp", "get", "truth"]).output() {
+        Ok(o) if o.status.success() => {
+            println!("MCP: `truth` is already registered with Claude Code.");
+        }
+        Ok(_) => {
+            let add = Command::new("claude")
+                .args(["mcp", "add", "--scope", "user", "truth", "--", "truth-mcp"])
+                .output();
+            match add {
+                Ok(o) if o.status.success() => {
+                    println!("MCP: registered `truth` with Claude Code (user scope).");
+                }
+                _ => manual(),
+            }
+        }
+        Err(_) => manual(),
+    }
+}
+
 /// The crate version this binary was built from.
 pub const TRUTH_VERSION: &str = env!("CARGO_PKG_VERSION");
 

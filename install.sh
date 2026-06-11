@@ -52,10 +52,18 @@ case ":$PATH:" in
 esac
 "$dest/truth" --version
 
+# Register the MCP server with Claude Code automatically when its CLI is
+# around (idempotent; silent skip otherwise).
+if command -v claude >/dev/null 2>&1; then
+  if claude mcp get truth >/dev/null 2>&1; then
+    echo "MCP: \`truth\` already registered with Claude Code."
+  elif claude mcp add --scope user truth -- "$dest/truth-mcp" >/dev/null 2>&1; then
+    echo "MCP: registered \`truth\` with Claude Code (user scope)."
+  fi
+fi
+
 cat <<'NEXT'
 
-Next steps (per repo):
-  truth init            # one-time: create the .truth store
-  truth hook install    # Claude Code: fact-check every agent turn
-  claude mcp add --scope user truth -- truth-mcp   # or register the MCP tool
+One step left, per repo:
+  truth setup       # init + agent hooks + MCP — every agent turn fact-checked
 NEXT
