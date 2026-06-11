@@ -51,9 +51,13 @@ pub fn run_check(
     let mut claim = truth_llm::extract_claim(config, question);
     // Concept resolution: a usage/route claim with no concrete subject (e.g.
     // "does anyone still use old checkout") gets its subject resolved against the
-    // indexed routes before planning.
+    // indexed routes before planning. Gated on actual usage phrasing in the
+    // question — resolving ARBITRARY unparseable prose against indexed routes
+    // guessed subjects out of thin air ("hooks are read at session start"
+    // fuzzy-matched /webhooks/stripe and got contradicted). A verifier must
+    // refuse what it can't parse, never re-interpret it.
     let mut resolved_note: Option<String> = None;
-    if needs_subject_resolution(&claim) {
+    if needs_subject_resolution(&claim) && has_usage_signal(question) {
         if let Some(res) = resolve_from_text(conn, question)? {
             resolved_note = Some(format!(
                 "Interpreted this as `{}` (confidence {:.0}%).",
@@ -709,6 +713,21 @@ fn resolve_route(
     Ok(FuzzyResolver::default().resolve(subject, &route_candidates(conn)?))
 }
 
+/// Whether the question actually talks about usage — the only license for
+/// fuzzy-resolving its subject against indexed routes. Without this gate,
+/// any unparseable sentence could be re-typed into a usage claim about
+/// whatever route it vaguely resembles.
+fn has_usage_signal(question: &str) -> bool {
+    let lower = question.to_ascii_lowercase();
+    ["use", "uses", "used", "using", "unused", "traffic", "calls", "called", "hits"]
+        .iter()
+        .any(|w| {
+            lower
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|t| t == *w)
+        })
+}
+
 /// Whether a claim lacks a concrete subject we can act on, so concept resolution
 /// against indexed routes is worth attempting.
 fn needs_subject_resolution(claim: &truth_core::claim::StructuredClaim) -> bool {
@@ -891,4 +910,25 @@ fn fmt_ts(secs: i64) -> String {
     chrono::DateTime::from_timestamp(secs, 0)
         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
         .unwrap_or_else(|| secs.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_signal_gates_subject_resolution() {
+        // Genuine usage questions keep the resolver.
+        assert!(has_usage_signal("does anyone still use old checkout"));
+        assert!(has_usage_signal("is /v1/refund unused?"));
+        // Conversational prose must NOT be re-typed into a usage claim. These
+        // exact sentences fuzzy-matched indexed routes ("hooks" →
+        // /webhooks/stripe) and produced false contradictions in dogfooding.
+        assert!(!has_usage_signal("One note: hooks are read at session start"));
+        assert!(!has_usage_signal(
+            "the legacy `index_repo` wrapper follows the default too"
+        ));
+        // "use" must match as a word, not a substring ("because", "house").
+        assert!(!has_usage_signal("because the house settings changed"));
+    }
 }

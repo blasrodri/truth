@@ -216,7 +216,9 @@ fn utf8_len(b: u8) -> usize {
 /// change verb — and otherwise require a few words so bare "done"/"ok" drop.
 fn is_plausible_claim(s: &str) -> bool {
     let words = s.split_whitespace().count();
-    if words == 0 || words > 40 {
+    // A single token ("+4", "done", "8080") is never a self-contained claim —
+    // comma-segmented prose produces these constantly.
+    if words < 2 || words > 40 {
         return false;
     }
     if words >= 3 {
