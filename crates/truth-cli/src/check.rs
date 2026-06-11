@@ -57,6 +57,7 @@ pub fn run_check(
     // fuzzy-matched /webhooks/stripe and got contradicted). A verifier must
     // refuse what it can't parse, never re-interpret it.
     let mut resolved_note: Option<String> = None;
+    let mut subject_inferred = false;
     if needs_subject_resolution(&claim) && has_usage_signal(question) {
         if let Some(res) = resolve_from_text(conn, question)? {
             resolved_note = Some(format!(
@@ -66,6 +67,7 @@ pub fn run_check(
             ));
             claim.subject = Some(res.label);
             claim.is_checkable = true;
+            subject_inferred = true;
             if claim.claim_type == truth_core::claim::ClaimType::Unknown {
                 claim.claim_type = truth_core::claim::ClaimType::UsageCount;
             }
@@ -289,6 +291,13 @@ pub fn run_check(
     // UX — we never silently substitute a different subject).
     if let Some(note) = &resolved_note {
         decision.caveats.insert(0, note.clone());
+    }
+    // An INFERRED subject may never produce Contradicted: contradicting our own
+    // interpretation of prose is a false-positive factory (quoted phrases like
+    // "nobody uses it" inside meta-discussion resolved to a real route and got
+    // "contradicted"). Stated subjects decide; interpretations only refuse.
+    if subject_inferred && decision.status == truth_core::enums::VerdictStatus::Contradicted {
+        decision = downgrade_inferred_contradiction(decision, claim.subject.as_deref());
     }
 
     let response_text = render(&ResponseInput {
@@ -713,6 +722,28 @@ fn resolve_route(
     Ok(FuzzyResolver::default().resolve(subject, &route_candidates(conn)?))
 }
 
+/// Cap a verdict on a fuzzy-INFERRED subject at Inconclusive. The evidence the
+/// engine gathered is kept in the caveats so the user can re-ask with the
+/// literal subject and get a real verdict.
+fn downgrade_inferred_contradiction(
+    decision: VerdictDecision,
+    subject: Option<&str>,
+) -> VerdictDecision {
+    let subject = subject.unwrap_or("the inferred subject");
+    let mut caveats = decision.caveats;
+    caveats.push(format!(
+        "The subject `{subject}` was inferred from the phrasing, not stated — refusing rather \
+         than contradicting an interpretation. Re-ask naming `{subject}` explicitly to decide."
+    ));
+    VerdictDecision {
+        status: truth_core::enums::VerdictStatus::Inconclusive,
+        confidence: 0.3,
+        evidence_ids: decision.evidence_ids,
+        caveats,
+        suggested_action: None,
+    }
+}
+
 /// Whether the question actually talks about usage — the only license for
 /// fuzzy-resolving its subject against indexed routes. Without this gate,
 /// any unparseable sentence could be re-typed into a usage claim about
@@ -930,5 +961,27 @@ mod tests {
         ));
         // "use" must match as a word, not a substring ("because", "house").
         assert!(!has_usage_signal("because the house settings changed"));
+    }
+
+    #[test]
+    fn inferred_subjects_never_contradict() {
+        // Quoted usage phrases in meta-discussion ('"nobody uses it" was
+        // contradicted...') resolve to a real route; the verdict must cap at
+        // Inconclusive — interpretations refuse, only stated subjects decide.
+        let d = VerdictDecision {
+            status: truth_core::enums::VerdictStatus::Contradicted,
+            confidence: 0.9,
+            evidence_ids: vec!["repo:route_exists".into()],
+            caveats: vec!["Interpreted this as `/v1/checkout` (confidence 31%).".into()],
+            suggested_action: Some("...".into()),
+        };
+        let down = downgrade_inferred_contradiction(d, Some("/v1/checkout"));
+        assert_eq!(
+            down.status,
+            truth_core::enums::VerdictStatus::Inconclusive
+        );
+        assert!(down.caveats.iter().any(|c| c.contains("inferred")));
+        // Evidence is preserved so the user can re-ask with the literal subject.
+        assert!(!down.evidence_ids.is_empty());
     }
 }

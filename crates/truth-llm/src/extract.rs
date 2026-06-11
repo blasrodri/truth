@@ -264,16 +264,17 @@ impl ClaimExtractor for RegexExtractor {
             }
         }
 
-        // Dependency: "uses tokio", "added serde as a dependency", "depends on
-        // X", "the X crate/package". The subject is a bare package token (not a
-        // /path). Gated so route/usage claims above win first.
+        // Dependency: "added serde as a dependency", "depends on X", "the X
+        // crate/package". The subject is a bare package token (not a /path).
+        // Bare "uses X" is deliberately NOT a cue: it fires on any prose about
+        // usage ("nobody uses it" once yielded the package `contradicted`) —
+        // a dependency claim must name the dependency relationship.
         let dep_phrasing = lower.contains("dependency")
             || lower.contains("depends on")
             || lower.contains("depend on")
             || lower.contains(" crate")
             || lower.contains(" package")
-            || lower.contains("uses ")
-            || lower.contains("use the ");
+            || lower.contains(" library");
         if dep_phrasing && !has_pure_route(text) {
             if let Some(dep) = dependency_name(text, &lower) {
                 let expects_absent = lower.contains("no longer")
@@ -816,10 +817,23 @@ mod tests {
 
     #[test]
     fn extracts_dependency_name_not_cue_word() {
-        // "the project uses serde" must yield `serde`, not `uses`/`project`.
-        let c = RegexExtractor.extract("the project uses serde");
+        // "uses the serde crate" must yield `serde`, not `uses`/`crate`.
+        let c = RegexExtractor.extract("the project uses the serde crate");
         assert_eq!(c.claim_type, ClaimType::DependencyUsed);
         assert_eq!(c.subject.as_deref(), Some("serde"));
+
+        let d = RegexExtractor.extract("we depend on tokio");
+        assert_eq!(d.claim_type, ClaimType::DependencyUsed);
+        assert_eq!(d.subject.as_deref(), Some("tokio"));
+    }
+
+    #[test]
+    fn bare_uses_prose_is_not_a_dependency_claim() {
+        // '"nobody uses it" was contradicted by the route existing' once
+        // extracted the package `contradicted`. Bare "uses" without a
+        // dependency word must not produce a dependency claim.
+        let c = RegexExtractor.extract("\"nobody uses it\" was contradicted by the route existing");
+        assert_ne!(c.claim_type, ClaimType::DependencyUsed);
     }
 
     #[test]
