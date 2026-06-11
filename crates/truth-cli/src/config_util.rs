@@ -8,11 +8,21 @@ use truth_core::config::Config;
 /// marker (`truth.toml` or `.truth/`) — the same discovery git does for
 /// `.git`. Without this, indexing in one directory and querying from another
 /// silently returned empty results.
+///
+/// The walk never ascends past a git-repo boundary: a `.truth` left in some
+/// ancestor (e.g. /tmp) must not capture every repo beneath it — receipts and
+/// evidence would silently land in the wrong store. A truth root belongs
+/// inside the repo it verifies.
 pub fn discover_root_from(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
     loop {
         if dir.join("truth.toml").is_file() || dir.join(".truth").is_dir() {
             return Some(dir);
+        }
+        // `.git` (dir, or file for worktrees) marks the repo root: check it
+        // (above) but never walk beyond it.
+        if dir.join(".git").exists() {
+            return None;
         }
         if !dir.pop() {
             return None;
@@ -89,6 +99,27 @@ mod tests {
         // Filesystem root has no truth.toml/.truth (if it does, the host is
         // already a truth repo and this assertion is the least of our worries).
         assert!(discover_root_from(Path::new("/nonexistent-dir-xyz")).is_none());
+    }
+
+    #[test]
+    fn discovery_never_ascends_past_a_git_boundary() {
+        // A stray .truth ABOVE a git repo must not capture the repo: receipts
+        // and evidence would silently land in the wrong store.
+        let tmp = std::env::temp_dir().join(format!("truth-ceil-{}", std::process::id()));
+        let repo = tmp.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.join(".truth")).unwrap();
+
+        assert!(
+            discover_root_from(&repo).is_none(),
+            "must stop at the .git boundary, not adopt the ancestor .truth"
+        );
+
+        // A marker INSIDE the repo still wins (checked before the boundary).
+        std::fs::create_dir_all(repo.join(".truth")).unwrap();
+        assert_eq!(discover_root_from(&repo).unwrap(), repo);
+
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]

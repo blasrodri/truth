@@ -385,6 +385,21 @@ impl ClaimExtractor for RegexExtractor {
                 let s = m.as_str().to_string();
                 (!NOT_SYMBOL.contains(&s.to_ascii_lowercase().as_str())).then_some(s)
             };
+            // Name-first matches must additionally LOOK like identifiers
+            // (snake_case, camelCase, a digit, or backticked). Plain prose
+            // adjectives otherwise become "symbols": "the timing-safe helper
+            // exists" once extracted the fragment `safe` and contradicted a
+            // true sentence — the engine judged a name the extractor invented.
+            let identifier_like = |m: &regex::Match| {
+                let s = m.as_str();
+                let before = text[..m.start()].chars().next_back();
+                before != Some('-')
+                    && (s.contains('_')
+                        || s.chars().any(|c| c.is_ascii_digit())
+                        || (s.chars().any(|c| c.is_ascii_uppercase())
+                            && s.chars().any(|c| c.is_ascii_lowercase()))
+                        || text.contains(&format!("`{s}`")))
+            };
             // Try BOTH orders; keep the first that yields a non-stopword name.
             // (Kind-first "function exists" yields the verb "exists" → rejected →
             // name-first "existing_helper function" wins.)
@@ -397,6 +412,7 @@ impl ClaimExtractor for RegexExtractor {
                     r.symbol_post
                         .captures(text)
                         .and_then(|c| c.get(1))
+                        .filter(identifier_like)
                         .and_then(ok)
                 });
             // Guard against vague prose ("refactored the checkout handler to be
@@ -813,6 +829,26 @@ mod tests {
         // No action/existence verb, no backticks → commentary, must refuse.
         let c = RegexExtractor.extract("I refactored the checkout handler to be much cleaner");
         assert!(c.claim_type != ClaimType::SymbolExists);
+    }
+
+    #[test]
+    fn prose_adjectives_are_not_symbol_names() {
+        // "the timing-safe helper exists" once extracted the fragment `safe`
+        // as a symbol and contradicted a TRUE sentence (caught in the wild).
+        // Name-first symbol names must look like identifiers.
+        let c = RegexExtractor.extract("confirm the timing-safe helper exists");
+        assert_ne!(c.claim_type, ClaimType::SymbolExists, "{:?}", c.subject);
+
+        // Identifier-shaped names still extract: snake_case, camelCase,
+        // backticked plain words.
+        for text in [
+            "the timing_safe_eq helper exists",
+            "the handleClick handler exists",
+            "the `compare` helper exists",
+        ] {
+            let c = RegexExtractor.extract(text);
+            assert_eq!(c.claim_type, ClaimType::SymbolExists, "{text}");
+        }
     }
 
     #[test]

@@ -6,11 +6,11 @@ When an agent says *"I added the `/v1/refund` route, set `MAX_RETRIES` to 5, onl
 
 It is not a chatbot and it does not decide truth with a model. A language model only parses the agent's sentence into a structured claim; a fixed-rule engine decides the verdict from retrieved evidence. **The agent cannot talk it into a different answer.**
 
-![The Stop hook blocking a lying agent turn](assets/demo.gif)
+![The verify_turn MCP call catching an agent's false claims](assets/demo.gif)
 
-<sub>The session chrome is simulated for reproducibility (`bash examples/demo.sh`); the
-block is the **real** `truth hook claude` output on a real staged repo — the same
-hook Claude Code runs on every turn.</sub>
+<sub>Real commands, real output: the exact `verify_turn` request an agent sends to
+`truth-mcp` and the exact response it gets back. Reproduce it yourself:
+`bash examples/demo.sh`.</sub>
 
 ```
 $ truth verify-turn "I added the /v1/refund endpoint, set MAX_RETRIES to 3, I only changed src/api.rs, and tests pass"

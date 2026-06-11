@@ -221,6 +221,30 @@ fn is_plausible_claim(s: &str) -> bool {
     if !(2..=40).contains(&words) {
         return false;
     }
+    // Intent prose is a plan, not an assertion: "Let me verify X", "confirm
+    // the helper exists" describe what the agent is ABOUT to check, and
+    // judging them as claims produced false verdicts in the wild. (Past tense
+    // — "verified that X" — still counts as a claim.)
+    let lower = s.trim_start().to_ascii_lowercase();
+    const INTENT: &[&str] = &[
+        "let me ",
+        "let's ",
+        "confirm ",
+        "verify ",
+        "check ",
+        "checking ",
+        "ensure ",
+        "i'll ",
+        "i will ",
+        "going to ",
+        "to confirm ",
+        "to verify ",
+        "to check ",
+        "now i ",
+    ];
+    if INTENT.iter().any(|p| lower.starts_with(p)) {
+        return false;
+    }
     if words >= 3 {
         return true;
     }
@@ -501,5 +525,20 @@ mod tests {
     fn splits_on_newlines_and_semicolons() {
         let segs = segment("I bumped the port to 8080;\nI added /v1/refund route");
         assert_eq!(segs.len(), 2);
+    }
+
+    #[test]
+    fn intent_prose_is_not_a_claim() {
+        // Plans aren't assertions — judging them produced false verdicts in
+        // the wild ("Let me verify X" / "confirm the helper exists").
+        let segs = segment(
+            "Let me verify the transitionState lacks a guard. confirm the timing-safe helper exists. \
+             Checking whether forUpdate is available. I set MAX_RETRIES to 5.",
+        );
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert!(segs[0].contains("MAX_RETRIES"));
+        // Past tense still counts as a claim.
+        let done = segment("I verified that MAX_RETRIES is 5 in src/config.rs");
+        assert_eq!(done.len(), 1);
     }
 }
