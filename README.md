@@ -35,8 +35,15 @@ the machine. No LLM, network, or account is required.
 
 ## Install
 
-**Prebuilt binaries** (no Rust toolchain needed) — grab the tarball for your
-platform from the [latest release](https://github.com/blasrodri/truth/releases/latest)
+**One-liner** (downloads the prebuilt binaries for your platform — no Rust
+toolchain needed):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/blasrodri/truth/main/install.sh | sh
+```
+
+**Or manually** — grab the tarball for your platform from the
+[latest release](https://github.com/blasrodri/truth/releases/latest)
 (macOS arm64/x64, Linux x64/arm64), then:
 
 ```bash
@@ -51,6 +58,13 @@ cargo build --release --workspace
 install target/release/truth target/release/truth-mcp /usr/local/bin/
 # binaries: truth (CLI) and truth-mcp (the MCP server)
 ```
+
+> **Why no hosted option?** truth is listed on MCP registries (e.g.
+> [Glama](https://glama.ai/mcp/servers)) for discovery, but it must run on
+> **your** machine: the verdicts come from your working tree, your git diff,
+> and your recorded test runs — none of which a remote server can see. Local
+> is not a limitation; it's the product (and why your code never leaves the
+> machine).
 
 ## Use it from your coding agent (MCP)
 
