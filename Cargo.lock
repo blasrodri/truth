@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "truth-ast"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "tree-sitter",
@@ -1905,7 +1905,7 @@ dependencies = [
 
 [[package]]
 name = "truth-cli"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1927,7 +1927,7 @@ dependencies = [
 
 [[package]]
 name = "truth-core"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1941,7 +1941,7 @@ dependencies = [
 
 [[package]]
 name = "truth-db"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "rusqlite",
@@ -1951,14 +1951,14 @@ dependencies = [
 
 [[package]]
 name = "truth-git"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "truth-indexer"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1975,7 +1975,7 @@ dependencies = [
 
 [[package]]
 name = "truth-llm"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "model2vec-rs",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "truth-logs"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "truth-mcp"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "serde",

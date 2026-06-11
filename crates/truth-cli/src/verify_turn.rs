@@ -221,11 +221,18 @@ fn is_plausible_claim(s: &str) -> bool {
     if !(2..=40).contains(&words) {
         return false;
     }
+    // Markdown furniture isn't prose: table rows ("| cell | ✅ |") and
+    // blockquotes ("> someone else's words") judged as claims produced
+    // garbage verdicts in the wild.
+    let trimmed = s.trim_start();
+    if trimmed.starts_with('|') || trimmed.starts_with('>') {
+        return false;
+    }
     // Intent prose is a plan, not an assertion: "Let me verify X", "confirm
     // the helper exists" describe what the agent is ABOUT to check, and
     // judging them as claims produced false verdicts in the wild. (Past tense
     // — "verified that X" — still counts as a claim.)
-    let lower = s.trim_start().to_ascii_lowercase();
+    let lower = trimmed.to_ascii_lowercase();
     const INTENT: &[&str] = &[
         "let me ",
         "let's ",
@@ -540,5 +547,18 @@ mod tests {
         // Past tense still counts as a claim.
         let done = segment("I verified that MAX_RETRIES is 5 in src/config.rs");
         assert_eq!(done.len(), 1);
+    }
+
+    #[test]
+    fn markdown_furniture_is_not_a_claim() {
+        // Table rows and blockquotes judged as claims produced garbage
+        // verdicts in the wild.
+        let segs = segment(
+            "| `admin.js` → `public/js/` | ✅ Deployed |\n\
+             > entrar al panel de admin y probar\n\
+             I set MAX_RETRIES to 5 in src/config.rs",
+        );
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert!(segs[0].contains("MAX_RETRIES"));
     }
 }

@@ -92,6 +92,17 @@ impl ClaimExtractor for RegexExtractor {
         let lower = text.to_ascii_lowercase();
         let r = res();
 
+        // Out-of-scope claims: truth's evidence is the LOCAL repo (index,
+        // working-tree diff, receipts). Claims about what a URL serves or
+        // what happened on another machine are unverifiable here BY DESIGN —
+        // judging them against local evidence contradicted true statements
+        // about a remote deployment (caught in the wild). Refuse early.
+        if text.contains("://") || has_remote_marker(&lower) {
+            return StructuredClaim::unknown(
+                "This claim is about external state (a URL or another machine) — truth only verifies the local repo, diff, and recorded runs.",
+            );
+        }
+
         // Usage: "nobody/no one uses X", "does anyone still use X", "X is unused"
         let usage_phrasing = lower.contains("nobody use")
             || lower.contains("no one use")
@@ -630,6 +641,28 @@ fn has_value_pattern(text: &str, lower: &str) -> bool {
         || r.port.is_match(lower)
 }
 
+/// Whether the sentence is about another machine/environment rather than the
+/// local working tree — deploys, ssh/ssm sessions, containers, "the box".
+fn has_remote_marker(lower: &str) -> bool {
+    [
+        "on the server",
+        "on the box",
+        "on the host",
+        "via ssh",
+        "via ssm",
+        "over ssh",
+        "deployed",
+        "in production",
+        "on production",
+        "the container",
+        "remote machine",
+        "remote box",
+        "remote server",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
+}
+
 /// Words that are never symbol/file names in a rename claim.
 fn is_stopword(token: &str) -> bool {
     const STOP: &[&str] = &[
@@ -1004,6 +1037,25 @@ mod tests {
             assert_eq!(c.claim_type, ClaimType::CommandSucceeded, "{text}");
             assert_eq!(c.subject.as_deref(), Some(kind), "{text}");
         }
+    }
+
+    #[test]
+    fn external_state_claims_are_refused_not_judged() {
+        // truth's evidence is the LOCAL repo. Claims about what a URL serves
+        // or what happened on another machine contradicted TRUE statements
+        // about a remote deployment (caught in the wild) — they must refuse.
+        for text in [
+            "https://prode.example.com/js/admin.js returns the new file with 0 inline onclick",
+            "only public/ files changed on the server",
+            "I deployed the fix and only touched public/assets.js",
+            "I updated config.toml on the box via ssm",
+        ] {
+            let c = RegexExtractor.extract(text);
+            assert!(!c.is_checkable, "{text} → {:?}", c.claim_type);
+        }
+        // Local-tree claims still extract normally.
+        let local = RegexExtractor.extract("I only changed src/auth.rs");
+        assert!(local.is_checkable);
     }
 
     #[test]
