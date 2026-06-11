@@ -127,15 +127,24 @@ pub fn claude() -> Result<()> {
     }
 }
 
-/// Load the truth config for the repo the hook fired in. None when no
-/// `.truth`/`truth.toml` root exists up the tree (repo not initialized).
+/// Load the truth config for the repo the hook fired in. Falls back to the
+/// git root when no `.truth`/`truth.toml` exists yet — installing the hooks
+/// IS the consent to fact-checking, so an uninitialized repo shouldn't
+/// silently opt out. The store auto-creates (and self-gitignores) on first
+/// use. Opt out of the fallback with `truth hook auto off`.
 fn config_for(event: &Value) -> Option<Config> {
     let cwd = event
         .get("cwd")
         .and_then(|v| v.as_str())
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())?;
-    let root = discover_root_from(&cwd)?;
+    let root = discover_root_from(&cwd).or_else(|| {
+        if auto_enabled() {
+            git_root(&cwd)
+        } else {
+            None
+        }
+    })?;
     let toml = root.join("truth.toml");
     let mut config = if toml.is_file() {
         Config::load(&toml).ok()?
@@ -144,6 +153,68 @@ fn config_for(event: &Value) -> Option<Config> {
     };
     anchor_at(&mut config, &root);
     Some(config)
+}
+
+/// Top-level directory of the git repo containing `dir`, if any.
+fn git_root(dir: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+fn global_config_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".truth").join("config.json"))
+}
+
+/// Whether hooks may auto-enable in git repos that haven't run `truth init`.
+/// Default ON — `truth hook auto off` writes the opt-out.
+pub fn auto_enabled() -> bool {
+    let Some(path) = global_config_path() else {
+        return true;
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.get("auto_enable").and_then(|b| b.as_bool()))
+        .unwrap_or(true)
+}
+
+/// `truth hook auto on|off|status` — toggle the zero-setup fallback.
+pub fn auto(mode: &str) -> Result<()> {
+    match mode {
+        "status" => {
+            println!(
+                "auto-enable is {} — hooks {} fact-check git repos that haven't run `truth init`.",
+                if auto_enabled() { "ON" } else { "OFF" },
+                if auto_enabled() { "DO" } else { "do NOT" },
+            );
+            Ok(())
+        }
+        "on" | "off" => {
+            let path = global_config_path()
+                .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut config: Value = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| json!({}));
+            config["auto_enable"] = json!(mode == "on");
+            std::fs::write(&path, serde_json::to_string_pretty(&config)?)?;
+            println!("auto-enable set to {mode} ({}).", path.display());
+            Ok(())
+        }
+        other => anyhow::bail!("unknown mode `{other}` (expected on | off | status)"),
+    }
 }
 
 /// Stop hook: fact-check the agent's final message; block on contradictions.

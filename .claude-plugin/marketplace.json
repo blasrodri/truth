@@ -1,0 +1,14 @@
+{
+  "name": "truth",
+  "owner": {
+    "name": "Blas Rodriguez Irizar",
+    "url": "https://github.com/blasrodri"
+  },
+  "plugins": [
+    {
+      "name": "truth",
+      "source": "./",
+      "description": "Fact-check every agent turn: deterministic, cited verdicts against your repo, working-tree diff, and recorded runs. Contradictions block the turn before you read them."
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v truth >/dev/null 2>&1 || echo 'truth plugin: the truth binary is not installed, so agent turns are NOT being fact-checked. Install it with: curl -fsSL https://raw.githubusercontent.com/blasrodri/truth/main/install.sh | sh'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v truth >/dev/null 2>&1 && truth hook claude || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v truth >/dev/null 2>&1 && truth hook claude || true"
+          }
+        ]
+      }
+    ]
+  }
+}

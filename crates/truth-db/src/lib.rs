@@ -41,6 +41,17 @@ pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating db dir {}", parent.display()))?;
+            // Make a `.truth/` store self-gitignoring (a `.gitignore` with `*`
+            // inside the dir) instead of editing the repo's .gitignore — the
+            // store must never show up in the user's diff, especially when it
+            // was auto-created by a hook. Editing their .gitignore would
+            // itself dirty the diff truth is about to verify.
+            if parent.file_name().and_then(|n| n.to_str()) == Some(".truth") {
+                let ignore = parent.join(".gitignore");
+                if !ignore.exists() {
+                    let _ = std::fs::write(&ignore, "*\n");
+                }
+            }
         }
     }
     let conn =

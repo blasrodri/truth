@@ -304,6 +304,12 @@ enum HookCommand {
     },
     /// The hook entry point Claude Code invokes (reads the event from stdin).
     Claude,
+    /// Toggle zero-setup: whether hooks fact-check git repos that haven't run
+    /// `truth init` (default on). Modes: on | off | status.
+    Auto {
+        #[arg(default_value = "status")]
+        mode: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -489,6 +495,7 @@ fn run(command: Command) -> anyhow::Result<()> {
         Command::Hook { cmd } => match cmd {
             HookCommand::Install { user } => truth_cli::hook::install(user),
             HookCommand::Claude => truth_cli::hook::claude(),
+            HookCommand::Auto { mode } => truth_cli::hook::auto(&mode),
         },
         Command::Db { cmd } => match cmd {
             DbCommand::Migrate => commands::db_migrate(),

@@ -64,6 +64,11 @@ fi
 
 cat <<'NEXT'
 
-One step left, per repo:
-  truth setup       # init + agent hooks + MCP — every agent turn fact-checked
+Enable the agent gate (pick one):
+  /plugin marketplace add blasrodri/truth && /plugin install truth@truth   # inside Claude Code
+  truth hook install --user     # or: hooks for all repos, no plugin
+  truth setup                   # or: project-scoped, current repo only
+
+Hooks are zero-setup after that: any git repo you work in is fact-checked
+(opt out with `truth hook auto off`).
 NEXT

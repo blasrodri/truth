@@ -35,18 +35,29 @@ the machine. No LLM, network, or account is required.
 
 ## Install
 
-Two commands, total:
+**Claude Code — as a plugin** (hooks + MCP tool in one install, all repos):
+
+```
+/plugin marketplace add blasrodri/truth
+/plugin install truth@truth
+```
+
+Then install the binary (the plugin will remind you at session start if you
+skip this):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/blasrodri/truth/main/install.sh | sh
-cd your-repo && truth setup
 ```
 
-The first installs the prebuilt binaries for your platform (no Rust
-toolchain) and registers the MCP server with Claude Code if its CLI is
-present. The second is the per-repo onboarding: creates the `.truth` store,
-installs the agent hooks, and double-checks the MCP registration. From the
-next Claude Code session in that repo, every agent turn is fact-checked.
+That's everything. **Zero per-repo setup**: the hooks fact-check any git repo
+you work in — the store auto-creates (self-gitignored) on first use, the
+index auto-refreshes on every check. Opt out of uninitialized repos with
+`truth hook auto off`; opt a single repo into project-scoped hooks with
+`truth setup`.
+
+**Without the plugin** — the installer also registers the MCP server when the
+`claude` CLI is present; add the hooks once with `truth hook install --user`
+(or per repo with `truth setup`).
 
 **Or manually** — grab the tarball for your platform from the
 [latest release](https://github.com/blasrodri/truth/releases/latest)
@@ -173,7 +184,11 @@ This registers two Claude Code hooks:
   *"tests pass"* checkable. (Receipts are only recorded when the hook payload
   carries a real exit code — never guessed.)
 
-Both hooks are fail-open: if truth errors, the session is never wedged.
+Both hooks are fail-open: if truth errors, the session is never wedged. And
+they're zero-setup: in a git repo that never ran `truth init`, the hooks
+auto-create the store at the git root (self-gitignored — your diff stays
+clean) and start verifying immediately. `truth hook auto off` restricts them
+to explicitly initialized repos.
 
 For pull requests, [`examples/github/pr-factcheck.yml`](examples/github/pr-factcheck.yml)
 is a drop-in GitHub workflow that fact-checks a PR's **description against its
