@@ -35,6 +35,12 @@ pub struct VerdictInput<'a> {
     /// — `"referenced"` / `"definition_only"` (both ⇒ present) or
     /// `"unreferenced"` (absent). `None` if no symbol scan was run.
     pub symbol_status: Option<String>,
+    /// Whether the index contains ANY `dependency_exists` facts at all (i.e. a
+    /// manifest was parsed). When `false`/`None`, the absence of a specific
+    /// dependency proves nothing — the index simply has no dependency coverage —
+    /// so a "depends on X" claim must REFUSE, not Contradict. This guards against
+    /// a stale/partial index false-contradicting a real dependency.
+    pub dependency_index_populated: Option<bool>,
 }
 
 /// Authority ordering by question type (spec §13.2). Higher = more authoritative.
@@ -163,16 +169,36 @@ fn route_exists_in_repo(input: &VerdictInput) -> bool {
     })
 }
 
-/// Whether the subject is declared as a dependency in the index (Cargo.toml,
-/// package.json, requirements.txt, ...), via the `dependency_exists` predicate.
+/// Whether the claim's subject is declared as a dependency in the index
+/// (Cargo.toml, package.json, requirements.txt, ...), via the
+/// `dependency_exists` predicate. Matches on the item subject so a different
+/// package's fact can never stand in for the claimed one (defensive: in
+/// production items are pre-filtered by subject, but the engine must not rely
+/// on the caller having done so).
 fn dependency_declared(input: &VerdictInput) -> bool {
+    let want = input.claim.subject.as_deref();
     input.items.iter().any(|i| {
         i.predicate.as_deref() == Some("dependency_exists")
             && i.value_json
                 .as_ref()
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
+            && match (want, item_subject(i)) {
+                // If we know both subjects, they must match (case-insensitive).
+                (Some(w), Some(s)) => s.eq_ignore_ascii_case(w),
+                // Subject unknown on one side: fall back to the legacy behaviour
+                // (any dependency fact counts) rather than spuriously failing.
+                _ => true,
+            }
     })
+}
+
+/// The subject a dependency/route evidence item is about, from `subject_text`
+/// or the `subject` metadata key.
+fn item_subject(i: &EvidenceItem) -> Option<&str> {
+    i.subject_text
+        .as_deref()
+        .or_else(|| i.metadata_json.get("subject").and_then(|v| v.as_str()))
 }
 
 /// Usage claim: "nobody uses X" → expected count 0.
@@ -184,9 +210,17 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
     if input.claim.claim_type == ClaimType::DependencyUsed {
         let declared = dependency_declared(input);
         let claims_absent = input.claim.operator == ClaimOperator::NotExists;
-        // Only decide here when we have a manifest signal or an explicit absence
-        // claim; otherwise fall through to the code-reference logic below.
-        if declared || claims_absent {
+        // The manifest is authoritative for dependency claims. Decide here when:
+        //  - the package IS declared (Supported / Contradicted by absence claim),
+        //  - the claim asserts absence, or
+        //  - the index HAS dependency coverage (so "not declared" is meaningful —
+        //    we can Contradict a positive claim for a package no manifest lists,
+        //    instead of falling through to code-reference noise where a name in a
+        //    comment/test would wrongly read as "in use").
+        // With no dependency coverage at all we fall through; the (false,false)
+        // arm then refuses rather than contradicting against an unindexed manifest.
+        let has_coverage = input.dependency_index_populated == Some(true);
+        if declared || claims_absent || has_coverage {
             let subject = input.claim.subject.as_deref().unwrap_or("the dependency");
             return match (declared, claims_absent) {
                 (true, false) => VerdictDecision {
@@ -212,15 +246,36 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                     caveats: vec![format!("`{subject}` is not declared as a dependency.")],
                     suggested_action: None,
                 },
-                (false, false) => VerdictDecision {
-                    status: VerdictStatus::Contradicted,
-                    confidence: 0.75,
-                    evidence_ids: vec![],
-                    caveats: vec![format!(
-                        "`{subject}` is not declared as a dependency in the manifest."
-                    )],
-                    suggested_action: None,
-                },
+                (false, false) => {
+                    // Absence only contradicts when the index actually HAS
+                    // dependency coverage (a manifest was parsed). With no
+                    // dependency facts at all, "not found" means "not indexed",
+                    // not "not a dependency" — refuse rather than false-contradict
+                    // a real dep against a stale/partial index.
+                    if input.dependency_index_populated == Some(true) {
+                        VerdictDecision {
+                            status: VerdictStatus::Contradicted,
+                            confidence: 0.75,
+                            evidence_ids: vec![],
+                            caveats: vec![format!(
+                                "`{subject}` is not declared as a dependency in any parsed manifest."
+                            )],
+                            suggested_action: None,
+                        }
+                    } else {
+                        VerdictDecision {
+                            status: VerdictStatus::Inconclusive,
+                            confidence: 0.4,
+                            evidence_ids: vec![],
+                            caveats: vec![format!(
+                                "No manifest dependencies are indexed, so I can't confirm or deny `{subject}` — run `truth index` to populate dependency facts."
+                            )],
+                            suggested_action: Some(
+                                "Re-index to check dependency claims.".into(),
+                            ),
+                        }
+                    }
+                }
             };
         }
     }
@@ -1110,6 +1165,7 @@ mod tests {
             usage_threshold: 0,
             code_references: None,
             symbol_status: None,
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
@@ -1126,6 +1182,7 @@ mod tests {
             usage_threshold: 0,
             code_references: Some(313),
             symbol_status: None,
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }
@@ -1141,6 +1198,7 @@ mod tests {
             usage_threshold: 0,
             code_references: Some(0),
             symbol_status: None,
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
@@ -1159,6 +1217,7 @@ mod tests {
             usage_threshold: 0,
             code_references: None,
             symbol_status: None,
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }
@@ -1174,6 +1233,7 @@ mod tests {
             usage_threshold: 0,
             code_references: None,
             symbol_status: None,
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Inconclusive);
     }
@@ -1190,6 +1250,7 @@ mod tests {
             usage_threshold: 0,
             code_references: None,
             symbol_status: None,
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
@@ -1206,6 +1267,7 @@ mod tests {
             usage_threshold: 0,
             code_references: None,
             symbol_status: None,
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }
@@ -1220,6 +1282,7 @@ mod tests {
             usage_threshold: 0,
             code_references: None,
             symbol_status: None,
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Inconclusive);
     }
@@ -1273,6 +1336,7 @@ mod tests {
             usage_threshold: 0,
             code_references: None,
             symbol_status: None,
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
@@ -1288,6 +1352,7 @@ mod tests {
             usage_threshold: 0,
             code_references: None,
             symbol_status: None,
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }
@@ -1304,6 +1369,7 @@ mod tests {
             usage_threshold: 0,
             code_references: None,
             symbol_status: None,
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Supported);
     }
@@ -1318,6 +1384,7 @@ mod tests {
             usage_threshold: 0,
             code_references: None,
             symbol_status: None,
+            dependency_index_populated: None,
         })
     }
 
@@ -1493,6 +1560,7 @@ mod tests {
             usage_threshold: 0,
             code_references: None,
             symbol_status: Some("definition_only".into()),
+            dependency_index_populated: None,
         });
         assert_eq!(d.status, VerdictStatus::Contradicted);
     }
@@ -1545,5 +1613,64 @@ mod tests {
     fn tests_pass_refused_without_any_receipt() {
         let claim = typed_claim(ClaimType::CommandSucceeded, "test", None);
         assert_eq!(decide_with(&claim, &[]).status, VerdictStatus::Inconclusive);
+    }
+
+    // ---- dependency claims & stale-index guard ----------------------------
+
+    fn decide_dep(
+        claim: &StructuredClaim,
+        items: &[EvidenceItem],
+        index_populated: Option<bool>,
+    ) -> VerdictDecision {
+        decide(&VerdictInput {
+            claim,
+            items,
+            query_results: &[],
+            usage_threshold: 0,
+            code_references: None,
+            symbol_status: None,
+            dependency_index_populated: index_populated,
+        })
+    }
+
+    fn dep_item(name: &str) -> EvidenceItem {
+        let mut it = pred_item("dependency_exists", json!(true), json!({}));
+        it.subject_text = Some(name.to_string());
+        it
+    }
+
+    #[test]
+    fn declared_dependency_is_supported() {
+        let claim = typed_claim(ClaimType::DependencyUsed, "serde", None);
+        let items = [dep_item("serde")];
+        assert_eq!(
+            decide_dep(&claim, &items, Some(true)).status,
+            VerdictStatus::Supported
+        );
+    }
+
+    #[test]
+    fn undeclared_dependency_contradicted_when_index_has_coverage() {
+        // tokio not in the manifest, but the index DID parse manifests → the
+        // absence is meaningful → Contradicted (not code-reference noise).
+        let claim = typed_claim(ClaimType::DependencyUsed, "tokio", None);
+        let items = [dep_item("serde")];
+        let d = decide_dep(&claim, &items, Some(true));
+        assert_eq!(d.status, VerdictStatus::Contradicted);
+        assert!(d.caveats.iter().any(|c| c.contains("manifest")));
+    }
+
+    #[test]
+    fn undeclared_dependency_refuses_when_no_coverage() {
+        // No dependency facts indexed at all: "not found" means "not indexed".
+        // Must REFUSE, never false-contradict a real dependency against a
+        // stale/partial index. This is the dogfooding regression.
+        let claim = typed_claim(ClaimType::DependencyUsed, "tokio", None);
+        let d = decide_dep(&claim, &[], Some(false));
+        assert_eq!(d.status, VerdictStatus::Inconclusive);
+        assert_eq!(
+            decide_dep(&claim, &[], None).status,
+            VerdictStatus::Inconclusive
+        );
     }
 }

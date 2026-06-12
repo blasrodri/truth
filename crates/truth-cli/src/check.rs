@@ -279,6 +279,16 @@ pub fn run_check(
         }
     }
 
+    // Whether ANY manifest dependency was indexed. Lets the verdict engine tell
+    // "this package isn't a dependency" apart from "no manifest was parsed"
+    // (a stale/partial index must not false-contradict a real dependency).
+    let dependency_index_populated =
+        if claim.claim_type == truth_core::claim::ClaimType::DependencyUsed {
+            Some(crate::refs::dependency_index_populated(conn)?)
+        } else {
+            None
+        };
+
     let mut decision = decide(&VerdictInput {
         claim: &claim,
         items: &repo_items,
@@ -286,6 +296,7 @@ pub fn run_check(
         usage_threshold: 0,
         code_references,
         symbol_status,
+        dependency_index_populated,
     });
     // Surface the concept interpretation so the user can confirm it (conservative
     // UX — we never silently substitute a different subject).

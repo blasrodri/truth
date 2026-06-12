@@ -753,7 +753,16 @@ fn extract_cargo_deps(contents: &str) -> Vec<Extracted<'_>> {
             continue;
         }
         if in_deps {
-            if let Some(name) = t.split('=').next().map(str::trim) {
+            if let Some(key) = t.split('=').next().map(str::trim) {
+                // Dotted keys (`anyhow.workspace = true`, `serde.features = [...]`)
+                // and quoted keys (`"some-crate" = ...`) name the same package.
+                // The crate name is the first dotted segment, unquoted.
+                let name = key
+                    .split('.')
+                    .next()
+                    .unwrap_or(key)
+                    .trim()
+                    .trim_matches('"');
                 if !name.is_empty() && !name.starts_with('#') {
                     out.push(fact(
                         name,
@@ -870,6 +879,26 @@ mod tests {
         facts
             .iter()
             .any(|f| f.subject == name && f.predicate == "dependency_exists")
+    }
+
+    #[test]
+    fn cargo_workspace_and_quoted_dep_keys() {
+        // Regression: `anyhow.workspace = true` indexed the crate as
+        // `anyhow.workspace`, so "depends on anyhow" never matched. The crate
+        // name is the first dotted segment, unquoted.
+        let src = r#"
+            [dependencies]
+            anyhow.workspace = true
+            serde = { version = "1", features = ["derive"] }
+            "tree-sitter-typescript" = "0.21"
+            tokio.features = ["full"]
+        "#;
+        let f = extract_cargo_deps(src);
+        assert!(has_dep(&f, "anyhow"));
+        assert!(has_dep(&f, "serde"));
+        assert!(has_dep(&f, "tree-sitter-typescript"));
+        assert!(has_dep(&f, "tokio"));
+        assert!(!has_dep(&f, "anyhow.workspace"));
     }
 
     #[test]

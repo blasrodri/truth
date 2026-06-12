@@ -676,11 +676,14 @@ fn is_stopword(token: &str) -> bool {
 /// after a dependency cue ("uses X", "depends on X", "added X", "the X crate")
 /// and returns the first plausible lowercase package identifier.
 fn dependency_name(text: &str, lower: &str) -> Option<String> {
-    // Cue words after which the next token is the package. Order matters: the
-    // specific cues are tried before the generic "the".
-    const AFTER: &[&str] = &["uses", "use", "using", "on", "added", "adds", "the"];
-    // Words that are never package names in this position (incl. the cue verbs
-    // themselves, so "the project uses serde" doesn't return "uses").
+    // Cue words after which the next non-stopword token is the package. Most
+    // specific cues first; the generic "the" is tried LAST so phrasings like
+    // "depends on the tokio crate" resolve on `on`/`the-after-on`, not on the
+    // leading "the project" (which once yielded the preposition `on`).
+    const AFTER: &[&str] = &["uses", "use", "using", "on", "upon", "added", "adds", "the"];
+    // Words that are never package names in this position. Includes the cue
+    // verbs/prepositions themselves so "the project depends on serde" returns
+    // `serde`, never `on`/`depends`/`uses`.
     const STOP: &[&str] = &[
         "a",
         "an",
@@ -688,16 +691,22 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
         "as",
         "to",
         "of",
+        "on",
+        "upon",
         "and",
         "it",
         "is",
         "was",
+        "has",
+        "have",
         "this",
         "that",
         "dependency",
         "dependencies",
         "crate",
+        "crates",
         "package",
+        "packages",
         "project",
         "projects",
         "we",
@@ -711,27 +720,43 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
         "depends",
         "depend",
         "library",
+        "libraries",
         "lib",
     ];
+    let plausible = |cand: &str| -> bool {
+        cand.len() >= 2
+            && cand.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && cand
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
+
     let tokens: Vec<&str> = text
         .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
         .filter(|t| !t.is_empty())
         .collect();
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_ascii_lowercase()).collect();
 
-    for i in 0..lower_tokens.len() {
-        if AFTER.contains(&lower_tokens[i].as_str()) {
-            // Scan forward to the next non-stopword token.
+    // Package-BEFORE-cue: "tree-sitter-typescript dependency", "the serde crate".
+    // The package is the last plausible token immediately preceding a noun cue.
+    const NOUN_CUE: &[&str] = &["dependency", "crate", "package", "library", "dependencies"];
+    for i in 1..lower_tokens.len() {
+        if NOUN_CUE.contains(&lower_tokens[i].as_str())
+            && !STOP.contains(&lower_tokens[i - 1].as_str())
+            && plausible(&lower_tokens[i - 1])
+        {
+            return Some(lower_tokens[i - 1].clone());
+        }
+    }
+
+    // Package-AFTER-cue, most specific cue first.
+    for cue in AFTER {
+        if let Some(i) = lower_tokens.iter().position(|t| t == cue) {
             for cand in lower_tokens.iter().skip(i + 1) {
                 if STOP.contains(&cand.as_str()) {
                     continue;
                 }
-                // Plausible package: lowercase-ish identifier, not all-caps const.
-                if cand.len() >= 2
-                    && cand
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-                {
+                if plausible(cand) {
                     return Some(cand.clone());
                 }
                 break;
@@ -894,6 +919,19 @@ mod tests {
         let d = RegexExtractor.extract("we depend on tokio");
         assert_eq!(d.claim_type, ClaimType::DependencyUsed);
         assert_eq!(d.subject.as_deref(), Some("tokio"));
+
+        // Regression: "depends on the X crate" once extracted the preposition
+        // `on` (the leading "the project" matched the generic cue, then the next
+        // non-stopword was `on`). Must yield the package.
+        let e = RegexExtractor.extract("the project depends on the tree-sitter crate");
+        assert_eq!(e.claim_type, ClaimType::DependencyUsed);
+        assert_eq!(e.subject.as_deref(), Some("tree-sitter"));
+
+        // Regression: package BEFORE the noun cue ("X dependency") returned no
+        // subject at all (forward-only scan) → a true claim went Inconclusive.
+        let f = RegexExtractor.extract("truth-ast has a tree-sitter-typescript dependency");
+        assert_eq!(f.claim_type, ClaimType::DependencyUsed);
+        assert_eq!(f.subject.as_deref(), Some("tree-sitter-typescript"));
     }
 
     #[test]
