@@ -108,6 +108,22 @@ impl TurnReport {
         self.contradicted() > 0
     }
 
+    /// The "wall of refusals" evasion (threat model #1): the single most
+    /// effective way to dodge a verifier is to never make a checkable claim —
+    /// report only judgments ("cleaner", "more robust", "should be faster").
+    /// truth refuses those, correctly, but a turn that is ALL refusals while
+    /// claiming substantive work is itself a signal: nothing the agent said
+    /// could be checked. We flag it when several claim-shaped segments were
+    /// found and NONE resolved to a Supported/Contradicted verdict.
+    ///
+    /// Deliberately conservative — needs ≥3 segments so short conversational
+    /// turns ("Done, let me know.") don't trip it, and stays silent the moment
+    /// anything was checkable (one Supported claim means the agent did make a
+    /// falsifiable statement).
+    pub fn is_wall_of_refusals(&self) -> bool {
+        self.verdicts.len() >= 3 && self.supported() == 0 && self.contradicted() == 0
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "message": self.message,
@@ -116,6 +132,7 @@ impl TurnReport {
                 "contradicted": self.contradicted(),
                 "refused": self.refused(),
                 "claims": self.verdicts.len(),
+                "all_refused": self.is_wall_of_refusals(),
             },
             "index": {
                 "repo": self.freshness.repo,
@@ -416,6 +433,15 @@ pub fn render_text(report: &TurnReport) -> String {
     if report.has_contradiction() {
         out.push_str("\n  ⚠ The agent's message contradicts the evidence above.\n");
     }
+    // Wall-of-refusals signal: nothing the agent claimed was checkable. Not a
+    // contradiction (so it doesn't block), but worth surfacing — staying vague
+    // is the easiest way to evade verification.
+    if report.is_wall_of_refusals() {
+        out.push_str(
+            "\n  ⚠ Nothing in this turn was checkable — every claim refused. \
+             The agent described work without stating anything verifiable.\n",
+        );
+    }
     // Trust caveat: if the index is empty or stale, the index-backed verdicts
     // above are unreliable. Surface it loudly so a "clean" result isn't trusted
     // blindly.
@@ -572,5 +598,70 @@ mod tests {
         );
         assert_eq!(segs.len(), 1, "{segs:?}");
         assert!(segs[0].contains("MAX_RETRIES"));
+    }
+
+    fn report(verdicts: Vec<ClaimVerdict>) -> TurnReport {
+        TurnReport {
+            message: String::new(),
+            verdicts,
+            freshness: Freshness {
+                repo: ".".into(),
+                artifacts: 5,
+                last_indexed_at: Some(0),
+                age_secs: Some(1),
+                auto_indexed: true,
+            },
+        }
+    }
+    fn refused(text: &str) -> ClaimVerdict {
+        ClaimVerdict {
+            text: text.into(),
+            status: VerdictStatus::Inconclusive,
+            confidence: 0.0,
+            checkable: false,
+            citation: None,
+        }
+    }
+    fn supported(text: &str) -> ClaimVerdict {
+        ClaimVerdict {
+            text: text.into(),
+            status: VerdictStatus::Supported,
+            confidence: 0.9,
+            checkable: true,
+            citation: None,
+        }
+    }
+
+    #[test]
+    fn all_refused_turn_is_flagged() {
+        // Three claim-shaped segments, none checkable → the wall-of-refusals
+        // evasion (#1): the agent described work without saying anything
+        // falsifiable.
+        let r = report(vec![
+            refused("I cleaned up the error handling"),
+            refused("made the flow more robust"),
+            refused("the code is more maintainable now"),
+        ]);
+        assert!(r.is_wall_of_refusals());
+        assert!(render_text(&r).contains("Nothing in this turn was checkable"));
+    }
+
+    #[test]
+    fn one_checkable_claim_silences_the_signal() {
+        // A single Supported claim means the agent DID make a falsifiable
+        // statement — not a wall of refusals, even amid vague prose.
+        let r = report(vec![
+            refused("I cleaned things up"),
+            refused("it's more robust"),
+            supported("set MAX_RETRIES to 5"),
+        ]);
+        assert!(!r.is_wall_of_refusals());
+    }
+
+    #[test]
+    fn short_conversational_turn_does_not_trip() {
+        // Below the 3-segment floor: a brief "done" turn is not flagged.
+        let r = report(vec![refused("done"), refused("let me know")]);
+        assert!(!r.is_wall_of_refusals());
     }
 }

@@ -1044,15 +1044,86 @@ fn decide_command(input: &VerdictInput) -> VerdictDecision {
             None,
         );
     }
+    // A green receipt still postdating the edit is Supported — but it can be
+    // EMPTY: a run that exercised nothing ("0 tests run") or was scope-narrowed
+    // to a subset (`--test foo`, `-k name`) does not prove the suite passes.
+    // Threat model #4. We keep it Supported (the run did exit 0) but lower the
+    // confidence and say so, so an empty "tests pass" isn't read as a full one.
+    let output_tail = item
+        .metadata_json
+        .get("output_tail")
+        .and_then(|v| v.as_str());
+    let mut caveats = vec![format!(
+        "`{command}` exited 0 after the last working-tree edit (recorded receipt)."
+    )];
+    let (confidence, suggested_action) = match receipt_weakness(command, output_tail) {
+        Some(reason) => {
+            caveats.push(format!(
+                "But this receipt is weak: {reason} — a green exit here does not prove the full suite passes."
+            ));
+            (
+                0.55,
+                Some(
+                    "Re-run the full command (no scope filters) to make \"passes\" mean the suite."
+                        .to_string(),
+                ),
+            )
+        }
+        None => (0.9, None),
+    };
     VerdictDecision {
         status: VerdictStatus::Supported,
-        confidence: 0.9,
+        confidence,
         evidence_ids: vec![format!("run:{command}")],
-        caveats: vec![format!(
-            "`{command}` exited 0 after the last working-tree edit (recorded receipt)."
-        )],
-        suggested_action: None,
+        caveats,
+        suggested_action,
     }
+}
+
+/// Detect an empty/weak green receipt from what we stored — no re-execution.
+/// Returns a short reason when the run can't stand for "the suite passes":
+///  - the output reports zero tests run, or
+///  - the command was scope-narrowed to a subset (a specific test/file/filter).
+fn receipt_weakness(command: &str, output_tail: Option<&str>) -> Option<String> {
+    let cmd = command.to_ascii_lowercase();
+    // Zero-work signals from common runners' summary lines.
+    if let Some(tail) = output_tail {
+        let t = tail.to_ascii_lowercase();
+        const ZERO: &[&str] = &[
+            "0 tests run",
+            "0 passed",
+            "ran 0 tests",
+            "no tests run",
+            "no tests ran",
+            "no tests found",
+            "0 selected",
+            "collected 0 items",
+            "0 examples",
+            "executed 0",
+        ];
+        if ZERO.iter().any(|z| t.contains(z)) {
+            return Some("the run reported zero tests executed".to_string());
+        }
+    }
+    // Scope-narrowing flags: the command targeted a subset, not the suite.
+    // `cargo test --test NAME`, `pytest path::case` / `-k expr`, jest `-t`,
+    // go `-run`, generic `--only`/`--filter`. Bare `cargo test`/`pytest` are NOT
+    // narrowed and must not trip this.
+    const NARROW: &[&str] = &[
+        " --test ",
+        " -k ",
+        " -t ",
+        " --run ",
+        " -run ",
+        " --filter ",
+        " --only ",
+        " --testname",
+        "::", // pytest/rust path-to-a-single-case
+    ];
+    if NARROW.iter().any(|n| cmd.contains(n)) {
+        return Some("the command was scope-narrowed to a subset of tests".to_string());
+    }
+    None
 }
 
 fn usage_caveats(input: &VerdictInput) -> Vec<String> {
@@ -1613,6 +1684,55 @@ mod tests {
     fn tests_pass_refused_without_any_receipt() {
         let claim = typed_claim(ClaimType::CommandSucceeded, "test", None);
         assert_eq!(decide_with(&claim, &[]).status, VerdictStatus::Inconclusive);
+    }
+
+    fn receipt_item_full(command: &str, output_tail: Option<&str>) -> EvidenceItem {
+        pred_item(
+            "command_receipt",
+            json!({"exit_code": 0}),
+            json!({
+                "command": command,
+                "exit_code": 0,
+                "fresh": true,
+                "output_tail": output_tail,
+            }),
+        )
+    }
+
+    #[test]
+    fn full_suite_receipt_is_strong_supported() {
+        // Bare `cargo test` (no scope filter, no zero-tests output) → Supported
+        // at full confidence, no weakness caveat.
+        let claim = typed_claim(ClaimType::CommandSucceeded, "test", None);
+        let items = [receipt_item_full("cargo test --workspace", None)];
+        let d = decide_with(&claim, &items);
+        assert_eq!(d.status, VerdictStatus::Supported);
+        assert!(d.confidence > 0.8);
+        assert!(!d.caveats.iter().any(|c| c.contains("weak")));
+    }
+
+    #[test]
+    fn scope_narrowed_receipt_is_weak() {
+        // `cargo test --test X` proves a subset, not the suite. Still Supported
+        // (it did exit 0), but flagged weak with lowered confidence.
+        let claim = typed_claim(ClaimType::CommandSucceeded, "test", None);
+        let items = [receipt_item_full("cargo test --test auth_only", None)];
+        let d = decide_with(&claim, &items);
+        assert_eq!(d.status, VerdictStatus::Supported);
+        assert!(d.confidence < 0.7);
+        assert!(d.caveats.iter().any(|c| c.contains("weak")));
+    }
+
+    #[test]
+    fn zero_tests_output_is_weak() {
+        let claim = typed_claim(ClaimType::CommandSucceeded, "test", None);
+        let items = [receipt_item_full(
+            "pytest",
+            Some("collected 0 items\n\nno tests ran in 0.01s"),
+        )];
+        let d = decide_with(&claim, &items);
+        assert_eq!(d.status, VerdictStatus::Supported);
+        assert!(d.caveats.iter().any(|c| c.contains("zero tests")));
     }
 
     // ---- dependency claims & stale-index guard ----------------------------

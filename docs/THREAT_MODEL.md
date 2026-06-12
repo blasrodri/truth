@@ -82,7 +82,10 @@ non-executing verifier; some are recall limits we are actively narrowing
    so an agent that reports only judgments is never caught lying because it
    never said anything falsifiable. `truth` shrinks this space (it scans the
    raw `message` as a backstop, and the more concrete the prose the more it
-   catches) but cannot eliminate it. **A wall of refusals is itself a signal.**
+   catches) but cannot eliminate it. **A wall of refusals is itself a signal —
+   and truth now surfaces it:** a turn with several claim-shaped segments where
+   *nothing* was checkable is flagged (`all_refused` in the JSON, a ⚠ line in
+   the text) so "I did a lot of vague work" doesn't read as a clean pass.
 
 2. **Phrase a true-but-misleading claim.** Verdicts are per-claim. An agent can
    state four things that are each individually Supported and still leave you
@@ -97,11 +100,16 @@ non-executing verifier; some are recall limits we are actively narrowing
 
 4. **Make a green receipt then change the code... carefully.** Receipt
    freshness is checked against your last working-tree edit time. The freshness
-   rule closes the obvious "test, then edit, then claim" hole. But an agent that
-   records a passing run on a trivially-passing test, or whose test doesn't
-   exercise the change, gets a Supported "tests pass" that is technically true
-   and practically empty. `truth` checks that a green run postdates the edit —
-   not that the test was worth running.
+   rule closes the obvious "test, then edit, then claim" hole. An agent whose
+   test doesn't *exercise* the change still gets a technically-true "tests pass"
+   — `truth` can't know coverage without executing. But the two most common
+   *empty* receipts are now caught deterministically from what was recorded: a
+   run that reported **zero tests executed** ("0 tests run", "collected 0
+   items") and a **scope-narrowed** command (`--test X`, `pytest path::case`,
+   `-k expr`) are still Supported (they did exit 0) but flagged **weak** with
+   lowered confidence and a caveat — a green subset run doesn't read as a green
+   suite. What remains uncatchable: a real test that runs but is too shallow to
+   fail on the bug.
 
 5. **Stale index on existence claims.** The index auto-refreshes incrementally,
    and diff-based claims ("I just changed X") bypass the index entirely and

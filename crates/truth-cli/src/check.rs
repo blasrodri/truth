@@ -372,6 +372,9 @@ fn receipt_item(run: &truth_core::models::Run, fresh: bool) -> EvidenceItem {
             "exit_code": run.exit_code,
             "ran_at": run.finished_at,
             "fresh": fresh,
+            // Short redacted output tail — lets the verdict spot an empty green
+            // receipt ("0 tests run") without re-executing anything.
+            "output_tail": run.output_tail,
         }),
     }
 }
