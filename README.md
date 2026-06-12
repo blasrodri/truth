@@ -25,6 +25,12 @@ $ truth verify-turn "I added the /v1/refund endpoint, set MAX_RETRIES to 3, I on
   ⚠ The agent's message contradicts the evidence above.
 ```
 
+**Jump to:** [Install](#install) · [Try in 60 seconds](#try-in-60-seconds) ·
+[Use from your agent (MCP)](#use-it-from-your-coding-agent-mcp) ·
+[Make it a gate (hooks)](#make-it-a-gate-the-agent-cant-skip-hooks) ·
+[How it works](#how-it-works) · [Benchmarks](#benchmarks) ·
+[Limitations & threat model](#limitations--threat-model)
+
 ## Why
 
 Coding agents over-claim. They report success inferred from clean logs, invent
@@ -55,6 +61,11 @@ skip this):
 curl -fsSL https://raw.githubusercontent.com/blasrodri/truth/main/install.sh | sh
 ```
 
+The installer downloads the prebuilt tarball and **verifies its published
+SHA-256 before extracting** — a corrupted or tampered download fails closed
+instead of installing. (A trust tool shouldn't ask you to run an unverified
+binary.)
+
 That's everything. **Zero per-repo setup**: the hooks fact-check any git repo
 you work in — the store auto-creates (self-gitignored) on first use, the
 index auto-refreshes on every check. Opt out of uninitialized repos with
@@ -70,6 +81,8 @@ index auto-refreshes on every check. Opt out of uninitialized repos with
 (macOS arm64/x64, Linux x64/arm64), then:
 
 ```bash
+# verify the download against the .sha256 published next to it, then extract
+shasum -a 256 -c truth-*.tar.gz.sha256   # or: sha256sum -c truth-*.tar.gz.sha256
 tar -xzf truth-*.tar.gz
 install truth-*/truth truth-*/truth-mcp /usr/local/bin/
 ```
@@ -88,6 +101,40 @@ install target/release/truth target/release/truth-mcp /usr/local/bin/
 > and your recorded test runs — none of which a remote server can see. Local
 > is not a limitation; it's the product (and why your code never leaves the
 > machine).
+
+## Try in 60 seconds
+
+Don't take the README's word for it — watch `truth` catch a lie and reproduce it
+yourself. The fastest path replays the exact request/response from the GIF
+above:
+
+```bash
+bash examples/demo.sh
+```
+
+Or run it by hand against the bundled [sample repo](examples/sample-repo) (real
+commands, real verdicts — two true claims and one planted lie):
+
+```bash
+cp -r examples/sample-repo /tmp/demo && cd /tmp/demo
+git init -q . && git add -A && git commit -qm baseline
+truth init && truth index .
+truth verify-turn "I set the payment retry count to 5, the service runs on \
+  port 8080, and I lowered the request timeout to 10 seconds" --repo /tmp/demo
+```
+
+```
+  ✓ Supported     I set the payment retry count to 5  (/tmp/demo/src/routes/checkout.rs:4)
+  ✓ Supported     the service runs on port 8080  (/tmp/demo/src/config.toml:3)
+  ✗ Contradicted  I lowered the request timeout to 10 seconds  (/tmp/demo/src/routes/checkout.rs:10)
+
+  2 supported · 1 contradicted · 0 refused
+```
+
+The timeout lie is caught against the code; the true claims are Supported with
+file:line citations. The full step-by-step — scope lies ("I only changed X"),
+`tests pass` receipts, and the audit ledger — is in
+[`examples/sample-repo/WALKTHROUGH.md`](examples/sample-repo/WALKTHROUGH.md).
 
 ## Use it from your coding agent (MCP)
 
@@ -307,6 +354,52 @@ agent message
 Every check is stored as an audit trail (the claim, the queries run, the
 verdict) in SQLite. Log samples are redacted (emails, JWTs, UUIDs, IPs, tokens)
 before being stored or shown.
+
+## Benchmarks
+
+The quality bar is enforced by an in-repo eval harness, not asserted in prose —
+every number below reproduces with `truth eval`. Latest run (`truth 0.3.8`,
+extractor `mixed`):
+
+| Fixture | Cases | Passed | What it measures |
+|---|--:|--:|---|
+| `agent_claims.yaml` | 13 | 13 | agent-phrased claims: true → Supported, lies → Contradicted, judgments → Refused |
+| `extractor_corpus.yaml` | 42 | 42 | the same facts phrased many ways (incl. hard prose), across value/route/symbol/dep claims |
+| `basic.yaml` + `claims.yaml` | 7 | 7 | end-to-end verdicts and claim-file format |
+| **Total** | **62** | **62** | |
+
+The numbers that matter for a verifier are asymmetric: **0 false passes** (no lie
+returned Supported, no vague claim returned a verdict) and **0 recall misses**
+on the current corpus. The design guarantees the *only* failure mode is refusing
+too much — never passing a lie. Full table (claim types, supported languages,
+false-positive/false-negative behavior) and reproduction steps:
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+## Limitations & threat model
+
+`truth` is a tool about trust, so it states its own boundaries plainly. The
+short version:
+
+- **A Contradicted verdict is strong** — the claim disagrees with primary
+  evidence `truth` read directly (code, diff, or a recorded run).
+- **A Supported verdict is weaker by design** — "consistent with the evidence I
+  could read," not "true in every sense." It does not prove the code is
+  *correct*, only that it matches the claim.
+- **A Refused verdict is honest, not a gap** — for the unverifiable, `truth`
+  declines to guess. Refused ≠ confirmed.
+- **The biggest evasion is staying vague.** An agent that reports only judgments
+  ("I improved the error handling") is never caught lying because it never said
+  anything falsifiable — though a wall of refusals is itself a signal.
+- **Everything below the verifier is trusted:** the working tree, the git
+  history, the `.truth/` store, and the binary itself. A compromised host can
+  defeat any local tool. (This is why `install.sh` verifies the published
+  SHA-256 before installing.)
+
+The full account — what a verdict can and cannot prove, and a numbered list of
+how an agent could still evade it — is in
+[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). For the per-claim-type breakdown
+of what's checkable, see [*What it can and cannot check*](#what-it-can-and-cannot-check)
+above.
 
 ## Other commands
 

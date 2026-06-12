@@ -28,12 +28,49 @@ release_json=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")
 tag=$(printf '%s' "$release_json" | grep -m1 '"tag_name"' | cut -d'"' -f4)
 [ -n "$tag" ] || { echo "could not determine the latest release" >&2; exit 1; }
 
-url="https://github.com/$REPO/releases/download/$tag/truth-$tag-$target.tar.gz"
+archive="truth-$tag-$target.tar.gz"
+url="https://github.com/$REPO/releases/download/$tag/$archive"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 echo "Downloading truth $tag for $target ..."
-curl -fsSL "$url" | tar -xz -C "$tmp"
+# Download to disk (not piped into tar) so the bytes can be checksum-verified
+# before anything is extracted or run.
+curl -fsSL "$url" -o "$tmp/$archive"
+
+# Verify the SHA-256 against the checksum the release publishes alongside the
+# tarball. This is the integrity gate: a corrupted download or a tampered
+# mirror fails here instead of installing a bad binary. (truth is a trust
+# tool; it should not ask you to pipe an unverified binary into your shell.)
+echo "Verifying checksum ..."
+if curl -fsSL "$url.sha256" -o "$tmp/$archive.sha256" 2>/dev/null && [ -s "$tmp/$archive.sha256" ]; then
+  # The .sha256 file is `<hash>  <filename>`; take only the hash so a path
+  # mismatch between CI and here can't break verification.
+  expected=$(awk '{print $1}' "$tmp/$archive.sha256" | head -n1)
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$tmp/$archive" | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 "$tmp/$archive" | awk '{print $1}')
+  else
+    echo "WARNING: no sha256sum/shasum found — cannot verify checksum." >&2
+    actual=""
+  fi
+  if [ -n "$actual" ]; then
+    if [ "$expected" = "$actual" ]; then
+      echo "Checksum OK ($actual)"
+    else
+      echo "CHECKSUM MISMATCH for $archive" >&2
+      echo "  expected: $expected" >&2
+      echo "  actual:   $actual" >&2
+      echo "Refusing to install. The download may be corrupted or tampered with." >&2
+      exit 1
+    fi
+  fi
+else
+  echo "WARNING: no published checksum for $archive — skipping verification." >&2
+fi
+
+tar -xzf "$tmp/$archive" -C "$tmp"
 
 dest="/usr/local/bin"
 if [ ! -w "$dest" ]; then
