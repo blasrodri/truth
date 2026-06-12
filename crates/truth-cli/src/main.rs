@@ -275,6 +275,11 @@ enum Command {
         /// Aggregate across all repos registered by `truth init`.
         #[arg(long)]
         all: bool,
+        /// Re-run each past contradiction through the CURRENT engine and flag
+        /// the ones that no longer contradict — phantom false-positives an
+        /// engine fix has already resolved. Self-auditing the lie ledger.
+        #[arg(long)]
+        review: bool,
         #[arg(long)]
         json: bool,
     },
@@ -483,8 +488,17 @@ fn run(command: Command) -> anyhow::Result<()> {
             out,
         } => report::report(&claim_file, local_log.as_deref(), &format, out.as_deref()),
         Command::Diff { old, new, json } => diff::diff(&old, &new, json),
-        Command::Stats { window, all, json } => {
-            truth_cli::stats::stats(window.as_deref(), all, json)
+        Command::Stats {
+            window,
+            all,
+            review,
+            json,
+        } => {
+            if review {
+                truth_cli::stats::review(window.as_deref(), json)
+            } else {
+                truth_cli::stats::stats(window.as_deref(), all, json)
+            }
         }
         Command::Ci { .. } => unreachable!("ci handled before run()"),
         Command::Settings { cmd } => match cmd {

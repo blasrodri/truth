@@ -232,7 +232,17 @@ impl ClaimExtractor for RegexExtractor {
         // "deleted old_config.toml". Needs a dot-extension path token so HTTP
         // routes ("/v1/refund") never land here; skipped when the sentence
         // also carries a pure route or a value claim (those are more specific).
-        if !has_pure_route(text) && !has_value_pattern(text, &lower) {
+        //
+        // ALSO skipped when the sentence names a symbol KIND ("added the X
+        // function in refs.rs"): there the file is just a LOCATION and the
+        // assertion is about the symbol — let the symbol claim (below) win.
+        // Without this, "added a dependency_index_populated function in refs.rs"
+        // became a file_changed claim on `refs.rs` and contradicted (the file
+        // wasn't in the current diff), a residual FP the ledger review surfaced.
+        if !has_pure_route(text)
+            && !has_value_pattern(text, &lower)
+            && !has_symbol_kind_phrase(text)
+        {
             if let Some(path) = file_subject(text) {
                 let expected = if ["deleted", "removed", "dropped"]
                     .iter()
@@ -401,7 +411,9 @@ impl ClaimExtractor for RegexExtractor {
                 "the", "a", "an", "this", "that", "it", "new", "old", "my", "our", "their", "its",
                 "some", "any", "no", "added", "removed", "deleted", "renamed", "created",
                 "dropped", "wired", "made", "is", "was", "exists", "exist", "ex", "still",
-                "present", "called", "named",
+                "present", "called", "named", // prepositions: "function IN refs.rs" must not
+                // yield `in` as the symbol name — the real name is name-first ("X function").
+                "in", "to", "from", "at", "on", "of", "into", "with", "for",
             ];
             let ok = |m: regex::Match| {
                 let s = m.as_str().to_string();
@@ -634,6 +646,13 @@ fn backticked(text: &str) -> Option<String> {
 
 /// Any route-regex hit whose last segment has NO dot-extension — i.e. an HTTP
 /// path like `/v1/refund`, not a file path like `src/auth.rs`.
+/// Whether the sentence carries an explicit symbol-KIND phrase
+/// ("X function", "the Y struct", "Z field") — in which case a co-mentioned
+/// filename is a location, not the subject, and the symbol claim takes priority.
+fn has_symbol_kind_phrase(text: &str) -> bool {
+    res().symbol.is_match(text) || res().symbol_post.is_match(text)
+}
+
 /// Whole-word containment: `word` appears in `haystack` bounded by non-alnum
 /// (and non-`_`/`-`) on both sides. So "dependency" matches in "a dependency
 /// file" but NOT inside the identifier "dependency_index_populated". `haystack`
@@ -1025,6 +1044,17 @@ mod tests {
         let c =
             RegexExtractor.extract("I added a dependency_index_populated field to VerdictInput");
         assert_ne!(c.claim_type, ClaimType::DependencyUsed);
+    }
+
+    #[test]
+    fn symbol_in_file_is_a_symbol_claim_not_file_claim() {
+        // "added a X function in refs.rs" — the file is a LOCATION; the assertion
+        // is about the symbol. Must be a SymbolExists claim on the symbol, not a
+        // FileChanged claim on `refs.rs` (which contradicted when the file wasn't
+        // in the current diff — a residual FP `stats --review` surfaced).
+        let c = RegexExtractor.extract("I added a dependency_index_populated function in refs.rs");
+        assert_eq!(c.claim_type, ClaimType::SymbolExists);
+        assert_eq!(c.subject.as_deref(), Some("dependency_index_populated"));
     }
 
     #[test]

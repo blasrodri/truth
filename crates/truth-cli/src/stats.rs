@@ -129,6 +129,114 @@ fn registered_repos() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// One re-evaluated past contradiction.
+#[derive(Debug, serde::Serialize)]
+struct ReviewItem {
+    question: String,
+    when: String,
+    /// Verdict the CURRENT engine gives the same question.
+    now: String,
+    /// True if it no longer contradicts — a phantom FP a fix has resolved.
+    resolved: bool,
+}
+
+/// `truth stats --review` — re-run every past contradiction through the CURRENT
+/// engine and report which ones no longer contradict. The ledger is the
+/// false-positive review queue; this closes the loop by auto-detecting the
+/// phantoms an engine fix has already retired (so they can stop scaring anyone)
+/// while leaving the genuine catches flagged.
+pub fn review(window: Option<&str>, json: bool) -> Result<()> {
+    use truth_core::enums::Trigger;
+
+    let since = now_secs() - window_secs(window);
+    let label = window.unwrap_or("7d");
+    let config = load_config()?;
+    let conn = truth_db::open(&config.database.path)?;
+
+    // De-dup questions (the ledger repeats meta-discussion sentences) and keep
+    // the most recent timestamp for each.
+    let rows = truth_db::repo::check_verdicts_since(&conn, since)?;
+    let mut seen: BTreeMap<String, i64> = BTreeMap::new();
+    for row in &rows {
+        if row.status == "contradicted" {
+            let e = seen.entry(row.question.clone()).or_insert(row.created_at);
+            *e = (*e).max(row.created_at);
+        }
+    }
+
+    // Re-index once so re-evaluation reflects the current working tree.
+    if std::env::var_os("TRUTH_NO_AUTOINDEX").is_none() {
+        crate::verify_turn::auto_refresh_index(&conn, &config);
+    }
+
+    let mut items: Vec<ReviewItem> = Vec::new();
+    for (question, ts) in seen {
+        // Re-run through the current engine. Trigger::Cli, no logs — we only
+        // care whether the verdict still lands on "contradicted".
+        let now = match crate::check::run_check(&conn, &config, &question, Trigger::Cli, None) {
+            Ok(out) => out.decision.status.as_db_str().to_string(),
+            Err(_) => "error".to_string(),
+        };
+        let resolved = now != "contradicted";
+        let when = chrono::DateTime::from_timestamp(ts, 0)
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_default();
+        items.push(ReviewItem {
+            question,
+            when,
+            now,
+            resolved,
+        });
+    }
+    // Phantoms (now-resolved) first — they're the actionable cleanup.
+    items.sort_by_key(|i| !i.resolved);
+
+    let resolved = items.iter().filter(|i| i.resolved).count();
+    let still = items.len() - resolved;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "window": label,
+                "reviewed": items.len(),
+                "resolved": resolved,
+                "still_contradicted": still,
+                "items": items,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("truth stats --review — re-checking past contradictions ({label})\n");
+    if items.is_empty() {
+        println!("  no contradictions recorded in this window.");
+        return Ok(());
+    }
+    println!(
+        "  reviewed {} distinct · {} now resolved (phantom FPs) · {} still contradicted\n",
+        items.len(),
+        resolved,
+        still
+    );
+    for it in &items {
+        let mark = if it.resolved {
+            "✓ resolved"
+        } else {
+            "✗ stands "
+        };
+        let q: String = it.question.chars().take(64).collect();
+        println!("  {mark}  [{:<13}] {q}  ({})", it.now, it.when);
+    }
+    if resolved > 0 {
+        println!(
+            "\n  {resolved} past contradiction(s) no longer fire — engine fixes retired them."
+        );
+    }
+    println!();
+    Ok(())
+}
+
 /// `truth stats [--window 7d] [--all] [--json]`
 pub fn stats(window: Option<&str>, all: bool, json: bool) -> Result<()> {
     let since = now_secs() - window_secs(window);
