@@ -65,3 +65,26 @@ cases:
   - { name: H04-port-listening, question: "the server is listening on 8080", repo: examples/sample-repo, expected_status: supported }
   - { name: H05-route-handle, question: "we handle POST /v1/checkout", repo: examples/sample-repo, expected_status: supported }
   - { name: H06-route-have, question: "there is a checkout endpoint at /v1/checkout", repo: examples/sample-repo, expected_status: supported }
+
+  # ---- DEPENDENCY claims (package.json: express, stripe, jest) -------------
+  # Every false-contradiction class from the 2026-06-12 dogfooding pass, frozen
+  # as regressions. TRUE deps support; a fabricated dep contradicts; PROSE that
+  # merely contains library/crate/use words must REFUSE, never contradict.
+  - { name: D01-dep-uses-crate, question: "the project uses the express package", repo: examples/sample-repo, expected_status: supported }
+  - { name: D02-dep-depends-on, question: "the project depends on stripe", repo: examples/sample-repo, expected_status: supported }
+  - { name: D03-dep-has, question: "it has a jest dependency", repo: examples/sample-repo, expected_status: supported }
+  - { name: D04-dep-fabricated, question: "the project depends on left-pad", repo: examples/sample-repo, expected_status: contradicted }
+  # Prose collisions — caught live; "real library / clever toy" once contradicted.
+  - { name: P01-prose-library, question: "this is a real library or a clever toy", repo: examples/sample-repo, expected_status: inconclusive }
+  - { name: P02-prose-standard-lib, question: "we should use a standard library function", repo: examples/sample-repo, expected_status: inconclusive }
+  - { name: P03-prose-the-real, question: "the real thing is the parser", repo: examples/sample-repo, expected_status: inconclusive }
+  # Identifier containing "dependency" is a SYMBOL claim, not a dep claim — so it
+  # resolves to symbol_exists and (since this field isn't in sample-repo)
+  # contradicts. The point: it must NOT be mis-typed as a dependency_used claim.
+  - { name: P04-ident-has-dep-word, question: "I added a dependency_count field", repo: examples/sample-repo, expected_status: contradicted }
+
+  # ---- SYMBOL / MEMBER claims (checkout.rs) --------------------------------
+  - { name: S01-fn-exists, question: "the handle_checkout function exists", repo: examples/sample-repo, expected_status: supported }
+  - { name: S02-fn-in-file, question: "I added the handle_checkout function in checkout.rs", repo: examples/sample-repo, expected_status: supported }
+  - { name: S03-struct-exists, question: "the Router struct exists", repo: examples/sample-repo, expected_status: supported }
+  - { name: S04-fn-fabricated, question: "the frobnicate_widget function exists", repo: examples/sample-repo, expected_status: contradicted }

@@ -808,18 +808,25 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
         .collect();
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_ascii_lowercase()).collect();
 
-    // Package-BEFORE-cue: "tree-sitter-typescript dependency", "`serde` crate".
-    // The package is the registry-shaped token immediately preceding a strong
-    // noun cue. `library`/`package` are NOT cues here — too collision-prone with
-    // prose ("real library", "clever toy"); they only count after an explicit
-    // dependency verb (below).
-    const NOUN_CUE: &[&str] = &["dependency", "crate", "dependencies"];
+    // Package-BEFORE-cue. Two tiers by how unambiguous the noun is:
+    //  STRONG ("dependency"/"crate"/"package") — these words are rarely prose,
+    //    so a plain plausible name before them is the package ("jest dependency",
+    //    "express package", "the serde crate").
+    //  WEAK ("library") — collides with prose ("standard library", "real
+    //    library"), so it only counts when the name is registry-SHAPED.
+    const STRONG_NOUN: &[&str] = &["dependency", "dependencies", "crate", "crates", "package"];
+    const WEAK_NOUN: &[&str] = &["library"];
     for i in 1..lower_tokens.len() {
-        if NOUN_CUE.contains(&lower_tokens[i].as_str())
-            && !STOP.contains(&lower_tokens[i - 1].as_str())
-            && package_shaped(&lower_tokens[i - 1])
-        {
-            return Some(lower_tokens[i - 1].clone());
+        let prev = &lower_tokens[i - 1];
+        if STOP.contains(&prev.as_str()) {
+            continue;
+        }
+        let cur = lower_tokens[i].as_str();
+        if STRONG_NOUN.contains(&cur) && plausible(prev) {
+            return Some(prev.clone());
+        }
+        if WEAK_NOUN.contains(&cur) && package_shaped(prev) {
+            return Some(prev.clone());
         }
     }
 
@@ -833,7 +840,8 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
         || has_word(lower, "dependency")
         || has_word(lower, "dependencies")
         || has_word(lower, "crate")
-        || has_word(lower, "crates");
+        || has_word(lower, "crates")
+        || has_word(lower, "package");
 
     // Package-AFTER-cue, most specific cue first.
     for cue in AFTER {
@@ -948,6 +956,22 @@ mod tests {
         assert_eq!(g.claim_type, ClaimType::ConfigValue);
         assert_eq!(g.subject.as_deref(), Some("MaxConns"));
         assert_eq!(g.expected_number(), Some(10.0));
+    }
+
+    #[test]
+    fn dependency_recall_strong_nouns_take_bare_names() {
+        // Strong dependency nouns (dependency/crate/package) license a plain
+        // package name; only `library` needs a registry-shaped name. These are
+        // the corpus D-band phrasings.
+        for (text, want) in [
+            ("the project uses the express package", "express"),
+            ("it has a jest dependency", "jest"),
+            ("we depend on stripe", "stripe"),
+        ] {
+            let c = RegexExtractor.extract(text);
+            assert_eq!(c.claim_type, ClaimType::DependencyUsed, "{text}");
+            assert_eq!(c.subject.as_deref(), Some(want), "{text}");
+        }
     }
 
     #[test]

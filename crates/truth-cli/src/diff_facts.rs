@@ -262,10 +262,16 @@ fn diff_evidence_item(
 /// `subject`. Returns `Untouched` if git is unavailable or the subject doesn't
 /// appear — the caller then falls back to the index, so this never blocks.
 pub fn scan(repo_dir: &str, subject: &str) -> Result<DiffFact> {
+    // `-- .` scopes the diff to files UNDER repo_dir. Without it, when repo_dir
+    // is a subdirectory of a larger git repo (a vendored example, a monorepo
+    // package), `git diff` reports the whole enclosing repo's changes — so a
+    // subject string appearing in an unrelated sibling file would be read as
+    // "added here". Scoping keeps the working-tree evidence local to the repo
+    // the verifier was pointed at.
     let out = Command::new("git")
         .arg("-C")
         .arg(repo_dir)
-        .args(["diff", "HEAD", "--unified=0", "--no-color"])
+        .args(["diff", "HEAD", "--unified=0", "--no-color", "--", "."])
         .output();
 
     let text = match out {

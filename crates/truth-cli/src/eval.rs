@@ -113,13 +113,19 @@ pub fn run_eval(config: &Config, fixture: &Fixture) -> Result<EvalReport> {
 
     for case in &fixture.cases {
         let conn = truth_db::open_in_memory()?;
+        // Point repo.root at THIS case's repo so diff-based claims scan the right
+        // working tree. Without this, the diff scanned the verifier's own repo —
+        // a fabricated symbol that happened to appear in truth's source (e.g. a
+        // test fixture) would false-PASS via `diff_says_added`.
+        let mut case_config = config.clone();
         if let Some(repo) = &case.repo {
             truth_indexer::index_repo(&conn, &config.repo, Some(Path::new(repo)))
                 .with_context(|| format!("indexing repo for case `{}`", case.name))?;
+            case_config.repo.root = repo.clone();
         }
         let outcome = run_check(
             &conn,
-            config,
+            &case_config,
             &case.question,
             Trigger::Cli,
             case.local_log.as_deref(),
