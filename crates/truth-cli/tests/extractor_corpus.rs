@@ -13,11 +13,13 @@
 //!   P* prose collisions         -> inconclusive  (must pass 100% — a regression
 //!                                  here means the verifier invented a verdict)
 //!   R* vague/judgment           -> inconclusive  (must pass 100%)
-//!   H* hard recall edge cases   -> supported     (tracked; a documented ceiling
-//!                                  of bare-regex recall is tolerated)
+//!   H* hard recall edge cases   -> supported     (now GATED — these natural
+//!                                  phrasings were recall gaps until 2026-06-12;
+//!                                  the whole corpus is a 100% contract so they
+//!                                  can't silently regress)
 //!
-//! A failure in any GATED band (everything except H*) is a real regression — an
-//! invented verdict or a missed catch — and fails CI.
+//! ANY case failing is a real regression — an invented verdict, a missed catch,
+//! or lost recall — and fails CI.
 
 use std::path::{Path, PathBuf};
 use truth_cli::eval::{load_fixture, run_eval, Fixture};
@@ -52,14 +54,8 @@ fn load_corpus() -> Fixture {
     fixture
 }
 
-/// `H*` cases probe phrasings the bare-regex extractor is known not to catch
-/// yet; they are tracked, not gated. Everything else is a hard contract.
-fn is_gated(name: &str) -> bool {
-    !name.starts_with('H')
-}
-
 #[test]
-fn extractor_corpus_gated_bands_are_perfect() {
+fn extractor_corpus_is_perfect() {
     let fixture = load_corpus();
     assert!(
         fixture.cases.len() >= 40,
@@ -69,14 +65,10 @@ fn extractor_corpus_gated_bands_are_perfect() {
 
     let report = run_eval(&offline(), &fixture).unwrap();
 
-    let gated_failures: Vec<&_> = report
-        .cases
-        .iter()
-        .filter(|c| is_gated(&c.name) && !c.passed)
-        .collect();
+    let failures: Vec<&_> = report.cases.iter().filter(|c| !c.passed).collect();
 
-    if !gated_failures.is_empty() {
-        let detail: String = gated_failures
+    if !failures.is_empty() {
+        let detail: String = failures
             .iter()
             .map(|c| {
                 format!(
@@ -86,32 +78,9 @@ fn extractor_corpus_gated_bands_are_perfect() {
             })
             .collect();
         panic!(
-            "{} gated extractor-corpus case(s) regressed (invented verdict or missed catch):{}",
-            gated_failures.len(),
+            "{} extractor-corpus case(s) regressed (invented verdict, missed catch, or lost recall):{}",
+            failures.len(),
             detail
         );
     }
-}
-
-#[test]
-fn extractor_corpus_hard_band_recall_does_not_collapse() {
-    // The H* band is the honest recall map — allowed to have misses, but if it
-    // drops below a floor something broke broadly. This guards against a change
-    // that "passes the gate" by making the extractor refuse everything.
-    let fixture = load_corpus();
-    let report = run_eval(&offline(), &fixture).unwrap();
-
-    let hard: Vec<&_> = report
-        .cases
-        .iter()
-        .filter(|c| c.name.starts_with('H'))
-        .collect();
-    let hard_pass = hard.iter().filter(|c| c.passed).count();
-    // Floor: at least one H* case must still resolve. (Today the bare regex
-    // catches a subset; the point is to notice if recall goes to zero.)
-    assert!(
-        hard_pass >= 1,
-        "hard-band recall collapsed to {hard_pass}/{} — extractor likely over-refusing",
-        hard.len()
-    );
 }

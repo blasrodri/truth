@@ -33,10 +33,32 @@ fn res() -> &'static Re {
     R.get_or_init(|| Re {
         // A path-like token: /foo, /v1/checkout, /a/b-c
         route: Regex::new(r"(/[A-Za-z0-9_][A-Za-z0-9_/\-.]*)").unwrap(),
-        // "port 8080", "port is 8080", "port = 8080", "port: 8080".
-        port: Regex::new(r"(?i)port\s*(?:is|=|:|of)?\s*(\d{2,5})").unwrap(),
-        retry: Regex::new(r"(?i)retr(?:y|ies|ying)[^0-9]{0,20}(\d+)").unwrap(),
-        timeout: Regex::new(r"(?i)timeout[^0-9]{0,20}(\d+)").unwrap(),
+        // "port 8080", "port is 8080", "port = 8080", "port: 8080", and the
+        // bare "(is) listening on 8080" / "listens on 8080" phrasing (a server
+        // listening on N is a port claim). The listen arm needs a 4-5 digit
+        // number so it doesn't grab small unrelated counts.
+        port: Regex::new(
+            r"(?i)(?:port\s*(?:is|=|:|of)?\s*(\d{2,5})|listen(?:s|ing)?\s+on\s+(?:port\s+)?(\d{3,5}))",
+        )
+        .unwrap(),
+        // Two retry phrasings:
+        //  (a) close form — a retry word then a number within a short window:
+        //      "retry 3", "MAX_RETRIES is 5", "retried 5 times".
+        //  (b) "N times" form — a retry/attempt cue with the count right before
+        //      "times", tolerating a long gap: "attempt the payment up to 5
+        //      times". Spelled numbers (one..twelve) accepted in both.
+        // Capture group 1 (close) or 2 (times) holds the count.
+        retry: Regex::new(
+            r"(?i)(?:retr(?:y|ies|ied|ying)[^0-9]{0,20}(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b|(?:retr(?:y|ies|ied|ying)|attempts?|attempted)\b[^0-9]*?(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+times?\b)",
+        )
+        .unwrap(),
+        // "timeout 30", "times out after 30", "time out after 30s". The space in
+        // "time out", the verb form ("times out"), and a trailing unit ("30s",
+        // "30 seconds") are all matched.
+        timeout: Regex::new(
+            r"(?i)time\s?-?\s?out[^0-9]{0,12}(\d+|one|two|three|four|five|six|seven|eight|nine|ten)",
+        )
+        .unwrap(),
         env_var: Regex::new(r"\b([A-Z][A-Z0-9_]{2,})\b").unwrap(),
         // A named constant claim: "MAX_RETRIES is 5", "MaxConns = 10",
         // "DEFAULT_PORT equals 8080", "changed MAX_RETRIES from 3 to 5",
@@ -351,11 +373,17 @@ impl ClaimExtractor for RegexExtractor {
             );
         }
 
-        // Retry count: "we retry payments 3 times", "changed retries from 3 to
-        // 5" (a from→to phrasing claims the SECOND number as the new state).
+        // Retry count: "we retry payments 3 times", "retried five times",
+        // "changed retries from 3 to 5" (from→to claims the SECOND number).
         if let Some(c) = r.retry.captures(&lower) {
-            let n: i64 =
-                post_change_target(&lower).unwrap_or_else(|| c[1].parse().unwrap_or_default());
+            let matched = c
+                .get(1)
+                .or_else(|| c.get(2))
+                .map(|m| m.as_str())
+                .unwrap_or("");
+            let n: i64 = post_change_target(&lower)
+                .or_else(|| parse_count(matched))
+                .unwrap_or_default();
             return claim(
                 ClaimType::RetryCount,
                 Some("retry_count".into()),
@@ -368,10 +396,11 @@ impl ClaimExtractor for RegexExtractor {
             );
         }
 
-        // Timeout value
+        // Timeout value ("timeout 30", "times out after 30s", "time out ... ten")
         if let Some(c) = r.timeout.captures(&lower) {
-            let n: i64 =
-                post_change_target(&lower).unwrap_or_else(|| c[1].parse().unwrap_or_default());
+            let n: i64 = post_change_target(&lower)
+                .or_else(|| parse_count(c.get(1).map(|m| m.as_str()).unwrap_or("")))
+                .unwrap_or_default();
             return claim(
                 ClaimType::TimeoutValue,
                 Some("timeout".into()),
@@ -384,10 +413,17 @@ impl ClaimExtractor for RegexExtractor {
             );
         }
 
-        // Port / config value: "runs on port 8080"
+        // Port / config value: "runs on port 8080", "listening on 8080". The
+        // port arm is group 1, the listen arm group 2 — take whichever matched.
         if let Some(c) = r.port.captures(&lower) {
-            let n: i64 =
-                post_change_target(&lower).unwrap_or_else(|| c[1].parse().unwrap_or_default());
+            let matched = c
+                .get(1)
+                .or_else(|| c.get(2))
+                .map(|m| m.as_str())
+                .unwrap_or("");
+            let n: i64 = post_change_target(&lower)
+                .or_else(|| parse_count(matched))
+                .unwrap_or_default();
             return claim(
                 ClaimType::ConfigValue,
                 Some("port".into()),
@@ -532,7 +568,11 @@ impl ClaimExtractor for RegexExtractor {
             || lower.contains("added")
             || lower.contains("created")
             || lower.contains("added the")
-            || lower.contains("wired");
+            || lower.contains("wired")
+            // A handler/server for a literal /path is evidence the route exists:
+            // "we handle POST /v1/checkout", "serves GET /x".
+            || lower.contains("handle")
+            || lower.contains("serve");
         let removed_verb = lower.contains("removed")
             || lower.contains("deleted")
             || lower.contains("dropped")
@@ -590,6 +630,32 @@ fn post_change_target(lower: &str) -> Option<i64> {
         .from_to
         .captures(lower)
         .and_then(|c| c[2].parse().ok())
+}
+
+/// Parse a small count from a digit token ("5") or a spelled-out number
+/// ("five"). Spelled numbers only cover one..twelve — enough for the retry/
+/// timeout phrasings agents use ("retried five times"); larger values are
+/// effectively always written as digits.
+fn parse_count(token: &str) -> Option<i64> {
+    if let Ok(n) = token.parse::<i64>() {
+        return Some(n);
+    }
+    let n = match token.trim().to_ascii_lowercase().as_str() {
+        "one" => 1,
+        "two" => 2,
+        "three" => 3,
+        "four" => 4,
+        "five" => 5,
+        "six" => 6,
+        "seven" => 7,
+        "eight" => 8,
+        "nine" => 9,
+        "ten" => 10,
+        "eleven" => 11,
+        "twelve" => 12,
+        _ => return None,
+    };
+    Some(n)
 }
 
 /// Match "tests pass" / "the build compiles" / "clippy is clean" phrasings to
@@ -940,6 +1006,43 @@ mod tests {
             assert_eq!(c.claim_type, ClaimType::ConfigValue, "{s}");
             assert!(c.expected_number().is_some(), "{s}");
         }
+    }
+
+    #[test]
+    fn natural_recall_phrasings() {
+        // Recall wins added 2026-06-12 — natural agent phrasings that used to
+        // refuse. Each must extract the right type and value.
+        let cases: &[(&str, ClaimType, f64)] = &[
+            // spelled-out retry count
+            (
+                "payments are retried five times before giving up",
+                ClaimType::RetryCount,
+                5.0,
+            ),
+            // "up to N times" with a long cue→count gap
+            (
+                "we attempt the payment up to 5 times",
+                ClaimType::RetryCount,
+                5.0,
+            ),
+            // "time out after Ns" — two-word + trailing unit
+            ("requests time out after 30s", ClaimType::TimeoutValue, 30.0),
+            // "listening on N" — port without the word "port"
+            (
+                "the server is listening on 8080",
+                ClaimType::ConfigValue,
+                8080.0,
+            ),
+        ];
+        for (text, ty, val) in cases {
+            let c = RegexExtractor.extract(text);
+            assert_eq!(c.claim_type, *ty, "{text}");
+            assert_eq!(c.expected_number(), Some(*val), "{text}");
+        }
+        // route handler phrasing → a route-existence claim on the literal path
+        let r = RegexExtractor.extract("we handle POST /v1/checkout");
+        assert_eq!(r.claim_type, ClaimType::RouteExists);
+        assert_eq!(r.subject.as_deref(), Some("/v1/checkout"));
     }
 
     #[test]
