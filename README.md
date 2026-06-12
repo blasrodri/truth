@@ -278,7 +278,7 @@ so a user *or an agent* can change knobs programmatically:
 truth settings list                              # every knob, current value, help
 truth settings set indexer.extractor mixed       # turn on AST precision (symbols/routes)
 truth settings set repo.include src,lib,app      # what to index
-truth settings set llm.enabled true              # use an LLM to parse claims (engine still decides)
+truth settings set llm.enabled true              # LLM fallback for phrasings regex can't parse (engine still decides)
 truth settings get indexer.extractor --json
 ```
 
@@ -293,7 +293,8 @@ language-agnostic, noisier). Re-run `truth index .` after changing it.
 ```
 agent message
   → segment into candidate claims (sentences, clauses)
-  → claim extraction (regex by default; optional LLM, never decides truth)
+  → claim extraction (deterministic regex first; optional LLM fallback only
+     for what regex refuses — never overrides a confident parse, never decides truth)
   → structured claim  (unverifiable → Refused, never guessed)
   → query plan (safe templates only — the LLM never writes LogQL/SQL)
   → evidence: repo index + working-tree git diff (changed lines, file list,
