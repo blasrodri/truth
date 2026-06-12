@@ -103,6 +103,18 @@ pub fn scan_references(
 
 /// Build a references report for a symbol, resolving its definition site from
 /// the index when possible (to exclude it from the count).
+/// Whether the index contains ANY `dependency_exists` fact — i.e. at least one
+/// manifest (Cargo.toml/package.json/...) was parsed. Used by the verdict engine
+/// to distinguish "X is not a dependency" from "no manifest was indexed".
+pub fn dependency_index_populated(conn: &rusqlite::Connection) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM evidence_items WHERE predicate = 'dependency_exists'",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 pub fn build_report(conn: &rusqlite::Connection, symbol: &str) -> Result<RefsReport> {
     let files = truth_db::repo::repo_file_uris(conn)?;
 

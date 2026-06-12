@@ -251,6 +251,13 @@ pub fn index(path: &str, stats_flag: bool, full: bool, extractor: Option<&str>) 
 pub fn check(question: &str, local_log: Option<&str>, json: bool) -> Result<()> {
     let config = load_config()?;
     let conn = open_db(&config)?;
+    // Self-heal: bring the index up to date with the working tree first, so an
+    // interactive `truth check` never contradicts a true claim against a stale
+    // snapshot (same guarantee verify_turn / the hooks already give). Cheap and
+    // incremental; opt out with TRUTH_NO_AUTOINDEX=1 for benchmarking.
+    if std::env::var_os("TRUTH_NO_AUTOINDEX").is_none() {
+        crate::verify_turn::auto_refresh_index(&conn, &config);
+    }
     let outcome = run_check(&conn, &config, question, Trigger::Cli, local_log)?;
     if json {
         print_json(&outcome.to_json());

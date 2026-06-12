@@ -67,15 +67,20 @@ fn res() -> &'static Re {
         // Symbol claim, kind-FIRST: "function validate_token", "struct Foo",
         // "the parse_legacy helper" → wait, that's name-first; see symbol_post.
         // This one: KIND then NAME, e.g. "function validate_token".
+        // NOTE: `field`/`variant`/`const` are intentionally NOT kind-first cues —
+        // as plain English words they appear mid-sentence ("field to the struct"
+        // → name `to`), so they're recognized name-first only (below).
         symbol: Regex::new(
             r"(?i)\b(?:function|func|fn|method|struct|type|class|interface|trait|enum|helper|handler)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?(?:\s*\(\s*\))?",
         )
         .unwrap(),
         // Symbol claim, NAME-first: "validate_token function", "parse_legacy
-        // helper", "handleClick method". Tried only if kind-first didn't match,
-        // so it can't steal a word from "<verb> function <name>".
+        // helper", "handleClick method", "subject field". Tried only if
+        // kind-first didn't match, so it can't steal a word from
+        // "<verb> function <name>". `field`/`variant`/`const` resolve against
+        // the AST member facts added 2026-06-12.
         symbol_post: Regex::new(
-            r"(?i)\b`?([A-Za-z_][A-Za-z0-9_]*)`?(?:\s*\(\s*\))?\s+(?:function|func|fn|method|struct|type|class|interface|trait|enum|helper|handler)\b",
+            r"(?i)\b`?([A-Za-z_][A-Za-z0-9_]*)`?(?:\s*\(\s*\))?\s+(?:function|func|fn|method|struct|type|class|interface|trait|enum|helper|handler|field|variant|const|constant)\b",
         )
         .unwrap(),
     })
@@ -227,7 +232,17 @@ impl ClaimExtractor for RegexExtractor {
         // "deleted old_config.toml". Needs a dot-extension path token so HTTP
         // routes ("/v1/refund") never land here; skipped when the sentence
         // also carries a pure route or a value claim (those are more specific).
-        if !has_pure_route(text) && !has_value_pattern(text, &lower) {
+        //
+        // ALSO skipped when the sentence names a symbol KIND ("added the X
+        // function in refs.rs"): there the file is just a LOCATION and the
+        // assertion is about the symbol — let the symbol claim (below) win.
+        // Without this, "added a dependency_index_populated function in refs.rs"
+        // became a file_changed claim on `refs.rs` and contradicted (the file
+        // wasn't in the current diff), a residual FP the ledger review surfaced.
+        if !has_pure_route(text)
+            && !has_value_pattern(text, &lower)
+            && !has_symbol_kind_phrase(text)
+        {
             if let Some(path) = file_subject(text) {
                 let expected = if ["deleted", "removed", "dropped"]
                     .iter()
@@ -280,12 +295,18 @@ impl ClaimExtractor for RegexExtractor {
         // Bare "uses X" is deliberately NOT a cue: it fires on any prose about
         // usage ("nobody uses it" once yielded the package `contradicted`) —
         // a dependency claim must name the dependency relationship.
-        let dep_phrasing = lower.contains("dependency")
+        // Whole-word cues only: a name that merely CONTAINS "dependency" (e.g.
+        // the identifier `dependency_index_populated` in "added a
+        // dependency_index_populated field") must NOT read as a dependency
+        // claim. Substring matching here mis-typed symbol claims as dep claims.
+        let dep_phrasing = has_word(&lower, "dependency")
+            || has_word(&lower, "dependencies")
             || lower.contains("depends on")
             || lower.contains("depend on")
-            || lower.contains(" crate")
-            || lower.contains(" package")
-            || lower.contains(" library");
+            || has_word(&lower, "crate")
+            || has_word(&lower, "crates")
+            || has_word(&lower, "package")
+            || has_word(&lower, "library");
         if dep_phrasing && !has_pure_route(text) {
             if let Some(dep) = dependency_name(text, &lower) {
                 let expects_absent = lower.contains("no longer")
@@ -390,7 +411,9 @@ impl ClaimExtractor for RegexExtractor {
                 "the", "a", "an", "this", "that", "it", "new", "old", "my", "our", "their", "its",
                 "some", "any", "no", "added", "removed", "deleted", "renamed", "created",
                 "dropped", "wired", "made", "is", "was", "exists", "exist", "ex", "still",
-                "present", "called", "named",
+                "present", "called", "named", // prepositions: "function IN refs.rs" must not
+                // yield `in` as the symbol name — the real name is name-first ("X function").
+                "in", "to", "from", "at", "on", "of", "into", "with", "for",
             ];
             let ok = |m: regex::Match| {
                 let s = m.as_str().to_string();
@@ -623,6 +646,41 @@ fn backticked(text: &str) -> Option<String> {
 
 /// Any route-regex hit whose last segment has NO dot-extension — i.e. an HTTP
 /// path like `/v1/refund`, not a file path like `src/auth.rs`.
+/// Whether the sentence carries an explicit symbol-KIND phrase
+/// ("X function", "the Y struct", "Z field") — in which case a co-mentioned
+/// filename is a location, not the subject, and the symbol claim takes priority.
+fn has_symbol_kind_phrase(text: &str) -> bool {
+    res().symbol.is_match(text) || res().symbol_post.is_match(text)
+}
+
+/// Whole-word containment: `word` appears in `haystack` bounded by non-alnum
+/// (and non-`_`/`-`) on both sides. So "dependency" matches in "a dependency
+/// file" but NOT inside the identifier "dependency_index_populated". `haystack`
+/// is expected lowercase; `word` must be lowercase.
+fn has_word(haystack: &str, word: &str) -> bool {
+    let is_boundary = |c: Option<char>| match c {
+        None => true,
+        Some(c) => !(c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+    };
+    let bytes = haystack.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = haystack[from..].find(word) {
+        let start = from + rel;
+        let end = start + word.len();
+        let before = haystack[..start].chars().next_back();
+        let after = if end < bytes.len() {
+            haystack[end..].chars().next()
+        } else {
+            None
+        };
+        if is_boundary(before) && is_boundary(after) {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
 fn has_pure_route(text: &str) -> bool {
     res().route.captures_iter(text).any(|c| {
         let last = c[1].rsplit('/').next().unwrap_or("");
@@ -676,11 +734,14 @@ fn is_stopword(token: &str) -> bool {
 /// after a dependency cue ("uses X", "depends on X", "added X", "the X crate")
 /// and returns the first plausible lowercase package identifier.
 fn dependency_name(text: &str, lower: &str) -> Option<String> {
-    // Cue words after which the next token is the package. Order matters: the
-    // specific cues are tried before the generic "the".
-    const AFTER: &[&str] = &["uses", "use", "using", "on", "added", "adds", "the"];
-    // Words that are never package names in this position (incl. the cue verbs
-    // themselves, so "the project uses serde" doesn't return "uses").
+    // Cue words after which the next non-stopword token is the package. Most
+    // specific cues first; the generic "the" is tried LAST so phrasings like
+    // "depends on the tokio crate" resolve on `on`/`the-after-on`, not on the
+    // leading "the project" (which once yielded the preposition `on`).
+    const AFTER: &[&str] = &["uses", "use", "using", "on", "upon", "added", "adds", "the"];
+    // Words that are never package names in this position. Includes the cue
+    // verbs/prepositions themselves so "the project depends on serde" returns
+    // `serde`, never `on`/`depends`/`uses`.
     const STOP: &[&str] = &[
         "a",
         "an",
@@ -688,16 +749,22 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
         "as",
         "to",
         "of",
+        "on",
+        "upon",
         "and",
         "it",
         "is",
         "was",
+        "has",
+        "have",
         "this",
         "that",
         "dependency",
         "dependencies",
         "crate",
+        "crates",
         "package",
+        "packages",
         "project",
         "projects",
         "we",
@@ -711,34 +778,85 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
         "depends",
         "depend",
         "library",
+        "libraries",
         "lib",
     ];
+    let plausible = |cand: &str| -> bool {
+        cand.len() >= 2
+            && cand.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && cand
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
+    // Registry names almost always carry a `-`/`_`/digit, or are backticked in
+    // the prose. Plain lowercase English words ("real" in "a real library",
+    // "standard library", "a clever toy") do NOT — and matching them produced
+    // false-contradicted dependency claims out of rhetoric (caught live
+    // 2026-06-12). The BEFORE-cue path demands this shape; the explicit-verb
+    // AFTER-cue path ("uses the serde crate") may take a bare name.
+    let package_shaped = |cand: &str| -> bool {
+        plausible(cand)
+            && (cand.contains('-')
+                || cand.contains('_')
+                || cand.chars().any(|c| c.is_ascii_digit())
+                || text.contains(&format!("`{cand}`")))
+    };
+
     let tokens: Vec<&str> = text
         .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
         .filter(|t| !t.is_empty())
         .collect();
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_ascii_lowercase()).collect();
 
-    for i in 0..lower_tokens.len() {
-        if AFTER.contains(&lower_tokens[i].as_str()) {
-            // Scan forward to the next non-stopword token.
+    // Package-BEFORE-cue. Two tiers by how unambiguous the noun is:
+    //  STRONG ("dependency"/"crate"/"package") — these words are rarely prose,
+    //    so a plain plausible name before them is the package ("jest dependency",
+    //    "express package", "the serde crate").
+    //  WEAK ("library") — collides with prose ("standard library", "real
+    //    library"), so it only counts when the name is registry-SHAPED.
+    const STRONG_NOUN: &[&str] = &["dependency", "dependencies", "crate", "crates", "package"];
+    const WEAK_NOUN: &[&str] = &["library"];
+    for i in 1..lower_tokens.len() {
+        let prev = &lower_tokens[i - 1];
+        if STOP.contains(&prev.as_str()) {
+            continue;
+        }
+        let cur = lower_tokens[i].as_str();
+        if STRONG_NOUN.contains(&cur) && plausible(prev) {
+            return Some(prev.clone());
+        }
+        if WEAK_NOUN.contains(&cur) && package_shaped(prev) {
+            return Some(prev.clone());
+        }
+    }
+
+    // A bare, non-package-shaped name (e.g. `serde`, `tokio`) may only be taken
+    // when the sentence carries an explicit dependency-relationship marker —
+    // "depends on serde", "the serde crate/dependency". Without one, the weak
+    // cues (`the`/`on`/`use`) are pure-prose collisions ("use a standard
+    // library", "the real thing") and must NOT yield a package.
+    let strong_dep_marker = lower.contains("depends on")
+        || lower.contains("depend on")
+        || has_word(lower, "dependency")
+        || has_word(lower, "dependencies")
+        || has_word(lower, "crate")
+        || has_word(lower, "crates")
+        || has_word(lower, "package");
+
+    // Package-AFTER-cue, most specific cue first.
+    for cue in AFTER {
+        if let Some(i) = lower_tokens.iter().position(|t| t == cue) {
             for cand in lower_tokens.iter().skip(i + 1) {
                 if STOP.contains(&cand.as_str()) {
                     continue;
                 }
-                // Plausible package: lowercase-ish identifier, not all-caps const.
-                if cand.len() >= 2
-                    && cand
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-                {
+                if package_shaped(cand) || (strong_dep_marker && plausible(cand)) {
                     return Some(cand.clone());
                 }
                 break;
             }
         }
     }
-    let _ = lower;
     None
 }
 
@@ -841,6 +959,22 @@ mod tests {
     }
 
     #[test]
+    fn dependency_recall_strong_nouns_take_bare_names() {
+        // Strong dependency nouns (dependency/crate/package) license a plain
+        // package name; only `library` needs a registry-shaped name. These are
+        // the corpus D-band phrasings.
+        for (text, want) in [
+            ("the project uses the express package", "express"),
+            ("it has a jest dependency", "jest"),
+            ("we depend on stripe", "stripe"),
+        ] {
+            let c = RegexExtractor.extract(text);
+            assert_eq!(c.claim_type, ClaimType::DependencyUsed, "{text}");
+            assert_eq!(c.subject.as_deref(), Some(want), "{text}");
+        }
+    }
+
+    #[test]
     fn extracts_symbol_claims_both_word_orders() {
         // kind-first
         let a = RegexExtractor.extract("I added function validate_token");
@@ -894,6 +1028,57 @@ mod tests {
         let d = RegexExtractor.extract("we depend on tokio");
         assert_eq!(d.claim_type, ClaimType::DependencyUsed);
         assert_eq!(d.subject.as_deref(), Some("tokio"));
+
+        // Regression: "depends on the X crate" once extracted the preposition
+        // `on` (the leading "the project" matched the generic cue, then the next
+        // non-stopword was `on`). Must yield the package.
+        let e = RegexExtractor.extract("the project depends on the tree-sitter crate");
+        assert_eq!(e.claim_type, ClaimType::DependencyUsed);
+        assert_eq!(e.subject.as_deref(), Some("tree-sitter"));
+
+        // Regression: package BEFORE the noun cue ("X dependency") returned no
+        // subject at all (forward-only scan) → a true claim went Inconclusive.
+        let f = RegexExtractor.extract("truth-ast has a tree-sitter-typescript dependency");
+        assert_eq!(f.claim_type, ClaimType::DependencyUsed);
+        assert_eq!(f.subject.as_deref(), Some("tree-sitter-typescript"));
+    }
+
+    #[test]
+    fn prose_with_library_word_is_not_a_dependency_claim() {
+        // Caught live 2026-06-12: "a real library or a clever toy" fuzzy-matched
+        // a dependency claim (subject `real`/`standard`) and got Contradicted —
+        // rhetoric judged as a missing dep. Plain English around library/use/the
+        // must not yield a package.
+        for text in [
+            "the one that decides whether this is a real library or a clever toy",
+            "this is a real library or a clever toy",
+            "we should use a standard library function",
+            "the real thing is the parser",
+        ] {
+            let c = RegexExtractor.extract(text);
+            assert_ne!(c.claim_type, ClaimType::DependencyUsed, "{text}");
+        }
+    }
+
+    #[test]
+    fn identifier_containing_dependency_is_not_a_dep_claim() {
+        // "added a dependency_index_populated field" — the identifier CONTAINS
+        // "dependency" but the claim is about a symbol, not a dependency. Whole-
+        // word cue matching prevents the mis-type.
+        let c =
+            RegexExtractor.extract("I added a dependency_index_populated field to VerdictInput");
+        assert_ne!(c.claim_type, ClaimType::DependencyUsed);
+    }
+
+    #[test]
+    fn symbol_in_file_is_a_symbol_claim_not_file_claim() {
+        // "added a X function in refs.rs" — the file is a LOCATION; the assertion
+        // is about the symbol. Must be a SymbolExists claim on the symbol, not a
+        // FileChanged claim on `refs.rs` (which contradicted when the file wasn't
+        // in the current diff — a residual FP `stats --review` surfaced).
+        let c = RegexExtractor.extract("I added a dependency_index_populated function in refs.rs");
+        assert_eq!(c.claim_type, ClaimType::SymbolExists);
+        assert_eq!(c.subject.as_deref(), Some("dependency_index_populated"));
     }
 
     #[test]

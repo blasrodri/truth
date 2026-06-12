@@ -69,6 +69,7 @@ fn golden_usage_contradicted() {
         usage_threshold: 0,
         code_references: None,
         symbol_status: None,
+        dependency_index_populated: None,
     });
     assert_eq!(d.status, VerdictStatus::Contradicted);
 }
@@ -84,6 +85,7 @@ fn golden_retry_mismatch_contradicted() {
         usage_threshold: 0,
         code_references: None,
         symbol_status: None,
+        dependency_index_populated: None,
     });
     assert_eq!(d.status, VerdictStatus::Contradicted);
 }
@@ -99,6 +101,7 @@ fn golden_port_supported() {
         usage_threshold: 0,
         code_references: None,
         symbol_status: None,
+        dependency_index_populated: None,
     });
     assert_eq!(d.status, VerdictStatus::Supported);
 }
@@ -113,6 +116,7 @@ fn golden_no_evidence_inconclusive() {
         usage_threshold: 0,
         code_references: None,
         symbol_status: None,
+        dependency_index_populated: None,
     });
     assert_eq!(d.status, VerdictStatus::Inconclusive);
 }
