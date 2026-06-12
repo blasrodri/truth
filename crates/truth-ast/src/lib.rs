@@ -250,12 +250,19 @@ fn extract_consts(root: &tree_sitter::Node, bytes: &[u8], out: &mut Vec<AstFact>
 fn extract_functions(root: &tree_sitter::Node, bytes: &[u8], out: &mut Vec<AstFact>) -> Result<()> {
     let q = Query::new(
         &tree_sitter_rust::language(),
+        // Covers top-level items AND the members agents routinely claim to add:
+        // struct fields, enum variants, associated consts. Without these, a true
+        // "I added the `subject` field" claim found no definition and was
+        // Contradicted (dogfooding FP, 2026-06-12).
         r#"
         (function_item name: (identifier) @name)
         (struct_item name: (type_identifier) @name)
         (enum_item name: (type_identifier) @name)
         (trait_item name: (type_identifier) @name)
         (type_item name: (type_identifier) @name)
+        (field_declaration name: (field_identifier) @name)
+        (enum_variant name: (identifier) @name)
+        (const_item name: (identifier) @name)
         "#,
     )
     .context("compiling symbol query")?;
@@ -401,5 +408,29 @@ mod tests {
         assert!(has("uses_string"));
         assert!(!has("ghost_fn"), "comment name leaked: {syms:?}");
         assert!(!has("also_ghost"), "string name leaked: {syms:?}");
+    }
+
+    #[test]
+    fn extracts_struct_fields_enum_variants_and_consts() {
+        // Added 2026-06-12: agents claim to add fields/variants/consts, not just
+        // top-level items. Without these a true "I added the `subject` field"
+        // claim found no definition and was Contradicted.
+        let src = r#"
+            pub struct Claim { pub subject: String, confidence: f32 }
+            pub enum Status { Supported, Contradicted }
+            pub const MAX_RETRIES: u32 = 5;
+        "#;
+        let syms: Vec<String> = extract_rust(src)
+            .unwrap()
+            .iter()
+            .filter(|x| x.predicate == "symbol_exists")
+            .map(|x| x.subject.clone())
+            .collect();
+        let has = |n: &str| syms.iter().any(|s| s == n);
+        assert!(has("subject"), "field missing: {syms:?}");
+        assert!(has("confidence"), "field missing: {syms:?}");
+        assert!(has("Supported"), "variant missing: {syms:?}");
+        assert!(has("Contradicted"), "variant missing: {syms:?}");
+        assert!(has("MAX_RETRIES"), "const missing: {syms:?}");
     }
 }
