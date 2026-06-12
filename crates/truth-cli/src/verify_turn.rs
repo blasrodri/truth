@@ -285,6 +285,29 @@ pub fn verify(
     verify_claims(conn, config, message, None, local_log)
 }
 
+/// Bring the index up to date with the working tree before a verdict, so checks
+/// never run against a stale snapshot (the root cause behind several symbol/
+/// usage false-contradictions). Incremental — skips unchanged files via one
+/// parallel hash pass (~10-50ms on a clean repo) — UNLESS the index format
+/// changed (after a truth upgrade), where a full rebuild re-stamps the version
+/// so we don't silently serve old-format evidence. Best-effort: returns whether
+/// it refreshed; on failure the caller's freshness warning still fires.
+pub fn auto_refresh_index(conn: &Connection, config: &Config) -> bool {
+    let format_stale = truth_db::index_format_is_stale(conn).unwrap_or(false);
+    let refreshed = truth_indexer::index_repo_opts(
+        conn,
+        &config.repo,
+        Some(std::path::Path::new(&config.repo.root)),
+        !format_stale, // incremental unless the format changed → full rebuild
+        config.indexer.extractor,
+    )
+    .is_ok();
+    if refreshed {
+        let _ = truth_db::set_index_format_version(conn);
+    }
+    refreshed
+}
+
 /// Verify a turn. If `claims` is `Some`, those agent-provided claim strings are
 /// checked directly (one verdict each) — the calling LLM did the parsing, which
 /// is more reliable than our regex segmenter and costs nothing extra since the
@@ -311,18 +334,7 @@ pub fn verify_claims(
     // — silently serving stale-format data. In that case we force a FULL rebuild
     // and re-stamp the format version. Best-effort throughout: on failure we
     // fall through and the freshness warning still fires.
-    let format_stale = truth_db::index_format_is_stale(conn).unwrap_or(false);
-    let auto_indexed = truth_indexer::index_repo_opts(
-        conn,
-        &config.repo,
-        Some(std::path::Path::new(&config.repo.root)),
-        !format_stale, // incremental unless the format changed → full rebuild
-        config.indexer.extractor,
-    )
-    .is_ok();
-    if auto_indexed {
-        let _ = truth_db::set_index_format_version(conn);
-    }
+    let auto_indexed = auto_refresh_index(conn, config);
 
     // Capture index freshness AFTER the refresh so the report reflects current
     // state — a verifier that silently checks against no data must not look
