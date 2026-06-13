@@ -2,6 +2,7 @@
 //! testable without spawning the binary.
 
 pub mod ask;
+pub mod audit_session;
 pub mod baseline;
 pub mod check;
 pub mod ci;

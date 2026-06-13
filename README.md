@@ -136,6 +136,25 @@ file:line citations. The full step-by-step — scope lies ("I only changed X"),
 `tests pass` receipts, and the audit ledger — is in
 [`examples/sample-repo/WALKTHROUGH.md`](examples/sample-repo/WALKTHROUGH.md).
 
+## Audit your own agent history
+
+If you use Claude Code, `truth` can replay your past sessions and show the
+over-claims it would have caught — checked against the code **as it was at the
+time** (each turn is verified against the commit that was HEAD when the agent
+wrote it, via a throwaway git worktree, so it never cries wolf about code that
+moved on):
+
+```bash
+truth audit-session --last 10            # your 10 most recent sessions
+truth audit-session --repo /path/to/repo # just one project
+```
+
+It only audits first-person work reports ("I added X", "tests pass"), not the
+agent's reasoning or quoted examples — auditing those is a false-positive
+factory (measured at 81% noise, now filtered out). This is the honest way to
+see, on your own repos, how often your agent told you something the code
+contradicts.
+
 ## Use it from your coding agent (MCP)
 
 `truth-mcp` is a local [Model Context Protocol](https://modelcontextprotocol.io)

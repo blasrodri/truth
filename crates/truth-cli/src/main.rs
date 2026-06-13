@@ -80,6 +80,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Audit your own Claude Code session history — show the over-claims truth
+    /// would have caught, each checked against the code AS IT WAS at the time.
+    AuditSession {
+        /// How many recent sessions to audit (newest first).
+        #[arg(long, default_value_t = 5)]
+        last: usize,
+        /// Restrict to sessions whose repo is this path.
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check GitHub for a newer truth release (notify only — never downloads).
     UpgradeCheck,
     /// Run a command and record a receipt (exit code, time, output digest) so
@@ -408,6 +420,13 @@ fn run(command: Command) -> anyhow::Result<()> {
             local_log,
             json,
         } => commands::check(&claim, local_log.as_deref(), json),
+        Command::AuditSession { last, repo, json } => {
+            truth_cli::audit_session::audit(&truth_cli::audit_session::AuditOpts {
+                last,
+                repo,
+                json,
+            })
+        }
         Command::UpgradeCheck => commands::upgrade_check(false),
         Command::Run { .. } => unreachable!("run handled before run()"),
         Command::RecordRun {
