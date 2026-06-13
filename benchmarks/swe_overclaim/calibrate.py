@@ -114,25 +114,49 @@ def judged_overclaim(instance_id):
     return None
 
 
+# Claim types whose verdict is TRUSTWORTHY in a fresh clone: they check against
+# the INDEXED CODE (does this symbol/value/route exist?). Diff-based types
+# (file_changed / only_changed / change_count / rename) check `git diff HEAD`,
+# which in a clone+patch does NOT reflect "what the agent changed in its session"
+# — so their verdicts here are setup artifacts, not real signal. We record them
+# but don't count them toward catch/false-pass.
+CODE_TYPES = {
+    "symbol_exists",
+    "config_value",
+    "retry_count",
+    "timeout_value",
+    "version_required",
+    "route_exists",
+    "env_var_exists",
+    "dependency_used",
+}
+
+
 def truth_verdicts(dest, claims):
     run([TRUTH, "init"], cwd=dest)
     run([TRUTH, "index"], cwd=dest)
-    buckets = {"supported": 0, "contradicted": 0, "refused": 0}
+    buckets = {"supported": 0, "contradicted": 0, "refused": 0, "diff_skipped": 0}
     details = []
     for c in claims:
         r = run([TRUTH, "check", c, "--json"], cwd=dest, timeout=60)
         try:
             v = json.loads(r.stdout)
             st = v["status"]
+            ctype = (v.get("claim") or {}).get("claim_type", "unknown")
         except Exception:  # noqa: BLE001
-            st = "refused"
+            st, ctype = "refused", "unknown"
+        # Only code-checkable claim types yield trustworthy verdicts in a clone.
+        if ctype not in CODE_TYPES and st != "refused":
+            buckets["diff_skipped"] += 1
+            details.append({"claim": c, "status": "diff_skipped", "claim_type": ctype})
+            continue
         if st == "supported":
             buckets["supported"] += 1
         elif st == "contradicted":
             buckets["contradicted"] += 1
         else:
             buckets["refused"] += 1
-        details.append({"claim": c, "status": st})
+        details.append({"claim": c, "status": st, "claim_type": ctype})
     return buckets, details
 
 
@@ -156,7 +180,8 @@ def main():
     targets = targets[:cap]
     print(f"calibrating truth on {len(targets)} real over-claims (failed tasks)", file=sys.stderr)
 
-    agg = {"supported": 0, "contradicted": 0, "refused": 0, "instances": 0, "setup_fail": 0}
+    agg = {"supported": 0, "contradicted": 0, "refused": 0, "diff_skipped": 0,
+           "instances": 0, "setup_fail": 0}
     false_passes, catches = [], []
     for r, quote in targets:
         with tempfile.TemporaryDirectory(prefix="truth-cal-") as dest:
@@ -165,7 +190,7 @@ def main():
                 continue
             buckets, details = truth_verdicts(dest, [quote])
             agg["instances"] += 1
-            for k in ("supported", "contradicted", "refused"):
+            for k in ("supported", "contradicted", "refused", "diff_skipped"):
                 agg[k] += buckets[k]
             for d in details:
                 if d["status"] == "supported":
@@ -175,21 +200,30 @@ def main():
             st = details[0]["status"] if details else "?"
             print(f"  {r['instance_id']}: {st}  «{quote[:60]}»", file=sys.stderr)
 
+    total = agg["supported"] + agg["contradicted"] + agg["refused"]
     print("=" * 60)
     print("truth calibration on real agent over-claims (FAILED tasks)")
     print("=" * 60)
     print(f"instances run            {agg['instances']}  (setup failures: {agg['setup_fail']})")
-    print(f"concrete claims checked  {agg['supported'] + agg['contradicted'] + agg['refused']}")
-    print(f"  CAUGHT (contradicted)  {agg['contradicted']}")
-    print(f"  refused (can't check)  {agg['refused']}")
-    print(f"  FALSE PASS (supported) {agg['supported']}  ← calibration targets")
+    print(f"over-claim sentences     {total + agg['diff_skipped']}")
+    print(f"  diff-based (excluded)  {agg['diff_skipped']}  ← file/rename claims need a LIVE session diff, not a clone")
+    print(f"  -- code-checkable: --")
+    print(f"  CAUGHT (contradicted)  {agg['contradicted']}  ← truth flagged a false component claim")
+    print(f"  refused (can't check)  {agg['refused']}  ← task-level (\"it's resolved\"); by design")
+    print(f"  supported              {agg['supported']}  ← a component claim that is LITERALLY TRUE")
     print()
-    print("--- FALSE PASSES to investigate (truth trusted a claim on a FAILED task) ---")
+    print("NOTE: 'supported' on a failed task is NOT automatically a false pass.")
+    print("An agent's patch can genuinely add `def foo` (so \"foo was added\" is TRUE)")
+    print("while the TASK still fails — that's a task-level over-claim truth refuses,")
+    print("not a symbol lie. A real false pass is Supported where the code does NOT")
+    print("contain the claimed thing; each 'supported' below is hand-verified.")
+    print()
+    print("--- 'supported' verdicts to hand-verify (true component claim, or real false pass?) ---")
     for f in false_passes[:12]:
         print(f"  [{f['instance_id']}] {f['claim'][:90]}")
-    json.dump({"agg": agg, "false_passes": false_passes, "catches": catches},
+    json.dump({"agg": agg, "supported_to_audit": false_passes, "catches": catches},
               open("calibration.json", "w"), indent=2)
-    print("\nwrote calibration.json (false_passes = the fixes to make)")
+    print("\nwrote calibration.json")
 
 
 if __name__ == "__main__":

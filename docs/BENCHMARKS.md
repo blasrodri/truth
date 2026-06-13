@@ -144,6 +144,51 @@ Real examples (the SWE-bench eval says every one of these **failed**):
   ("looks good now") isn't counted — exactly the evasion the
   [threat model](THREAT_MODEL.md) documents.
 
+### Does truth actually catch them? (calibration)
+
+The 30% is the *problem size*. The number that matters for the tool is: of those
+real over-claims, what does truth's engine actually do? `calibrate.py` answers it
+— it clones each instance's repo (derived from the instance id, no auth), applies
+the agent's patch, and runs truth's verdict engine on the **exact** sentence the
+agent over-claimed with.
+
+**Run on the 27 real over-claims (2026-06-13):**
+
+```
+diff-based (excluded)  24   file/rename claims that need a LIVE session diff;
+                            not adjudicable in a fresh clone, so not counted
+code-checkable:         3
+  supported             1   a component claim that is LITERALLY TRUE
+  (the other two were extractor bugs — see below)
+```
+
+Two distinct lessons came out of this, and both are *why* you calibrate instead
+of trusting a headline:
+
+1. **"Supported" on a failed task is not automatically a missed lie.** The one
+   genuine `supported` was *"the `get_view_plugins` method has been successfully
+   added"* — and the agent's patch **does** contain `+ def
+   get_view_plugins(self):`. The method really was added; the *task* failed
+   because it didn't behave correctly. truth is **right** to support the
+   component claim; the over-claim lives at the task level, which truth refuses.
+
+2. **The run surfaced three real extractor bugs — the actual payoff.** On
+   sentences like *"the `field_names` method **now** returns…"* and *"the method
+   **has** been added"*, a kind-first pattern grabbed the trailing prose word
+   (`now`, `are`, `has`) as the symbol name — producing false contradictions and
+   one wrong support. Root cause: the kind-first symbol match didn't require the
+   name to look like an identifier. **Fixed** (a symbol must be
+   snake_case/camelCase/digit/backticked; plain prose words are rejected), with
+   regression tests named for these exact sentences. Re-checked, those sentences
+   now refuse or resolve the real identifier.
+
+The loop — real over-claim → run truth → inspect *every* verdict → fix the wrong
+ones → re-verify — is the entire point. A benchmark that only prints "30%" is a
+vanity stat; this one made truth measurably more correct (three extractor fixes,
+this turn alone). The 24 excluded + the task-level refusals are the honest
+boundary: most over-claims are about whether the *task* succeeded, which truth
+doesn't bluff about — it adjudicates the concrete subset and is calibrated there.
+
 ## Performance
 
 Verdicts are local and deterministic. The index auto-refreshes incrementally on

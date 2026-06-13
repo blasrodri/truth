@@ -524,10 +524,18 @@ impl ClaimExtractor for RegexExtractor {
             // Try BOTH orders; keep the first that yields a non-stopword name.
             // (Kind-first "function exists" yields the verb "exists" → rejected →
             // name-first "existing_helper function" wins.)
+            //
+            // BOTH paths require the name to LOOK like an identifier. Kind-first
+            // "the field_names method NOW returns" / "method ARE working" used to
+            // grab the trailing English word (`now`/`are`) as the symbol — a
+            // whole class of false verdicts the SWE-bench calibration surfaced.
+            // A real symbol is snake_case / camelCase / has a digit / is
+            // backticked; plain lowercase prose words never are.
             let name = r
                 .symbol
                 .captures(text)
                 .and_then(|c| c.get(1))
+                .filter(identifier_like)
                 .and_then(ok)
                 .or_else(|| {
                     r.symbol_post
@@ -1262,6 +1270,30 @@ mod tests {
         let c = RegexExtractor.extract("The get_view_plugins method has been successfully added");
         assert_eq!(c.claim_type, ClaimType::SymbolExists);
         assert_eq!(c.subject.as_deref(), Some("get_view_plugins"));
+    }
+
+    #[test]
+    fn kind_first_prose_word_is_not_a_symbol() {
+        // "the field_names method NOW returns" / "method ARE working" grabbed the
+        // trailing English word (`now`/`are`) kind-first as the symbol — a whole
+        // false-verdict class the SWE-bench calibration surfaced. A symbol must
+        // look like an identifier; plain prose words after a kind word do not.
+        for text in [
+            "the field_names method now returns a view of the keys",
+            "the handleNodeLoad method are working as expected",
+            "the parser function still behaves correctly",
+        ] {
+            let c = RegexExtractor.extract(text);
+            // Either not a symbol claim, or it resolved the REAL identifier —
+            // never the bare prose word.
+            if c.claim_type == ClaimType::SymbolExists {
+                let s = c.subject.as_deref().unwrap_or("");
+                assert!(
+                    !["now", "are", "still", "has", "be"].contains(&s),
+                    "grabbed prose word `{s}` from: {text}"
+                );
+            }
+        }
     }
 
     #[test]
