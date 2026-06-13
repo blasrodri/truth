@@ -34,12 +34,17 @@ $ truth verify-turn "I added the /v1/refund endpoint, set MAX_RETRIES to 3, I on
 ## Why
 
 Coding agents over-claim. They report success inferred from clean logs, invent
-terminal output, and confidently describe changes they didn't make. `truth`
-catches the **checkable** subset — wrong config values, routes/functions
-claimed added or removed, files claimed edited, "I only changed X" scope
-claims, renames, and *"tests pass"* (against recorded runs) — and **refuses**
-the rest (*"this is cleaner"*) instead of guessing. A refusal is honest, not a
-gap: a verifier that bluffs is worse than none.
+terminal output, and confidently describe changes they didn't make. We measured
+it: across 100 real SWE-agent runs on real GitHub issues, **30% of the attempts
+that *failed* the test suite still claimed they fixed the issue** ("the method
+has been successfully added", "the issue has been resolved") — ground truth from
+the SWE-bench eval, claims judged by an LLM, [reproducible](docs/BENCHMARKS.md#external-validation--real-agent-over-claims-not-our-fixtures).
+
+`truth` catches the **checkable** subset of those claims — wrong config values,
+routes/functions claimed added or removed, files claimed edited, "I only changed
+X" scope claims, renames, and *"tests pass"* (against recorded runs) — and
+**refuses** the rest (*"this is cleaner"*) instead of guessing. A refusal is
+honest, not a gap: a verifier that bluffs is worse than none.
 
 Everything runs **locally**. The store is a single SQLite file in `.truth/`;
 raw logs are never persisted (only redacted aggregates); your code never leaves
