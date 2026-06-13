@@ -45,20 +45,32 @@ def rows(dataset, offset, length, split="train"):
     return get(url).get("rows", [])
 
 
+# instance_id -> (repo, base_commit). Instances live in either the main
+# SWE-bench (test split) or SWE-bench-extra (train split).
+SWEBENCH_SOURCES = [
+    (SWEBENCH_DS, "test"),
+    ("nebius/SWE-bench-extra", "train"),
+]
+
+
 def swebench_lookup(instance_id, cache):
-    """Map instance_id -> (repo, base_commit) from princeton-nlp/SWE-bench."""
+    """Map instance_id -> (repo, base_commit), trying both SWE-bench datasets."""
     if instance_id in cache:
         return cache[instance_id]
-    where = urllib.parse.quote(f"\"instance_id\"='{instance_id}'")
-    url = (
-        f"{BASE}/filter?dataset={urllib.parse.quote(SWEBENCH_DS, safe='')}"
-        f"&config=default&split=test&where={where}&length=1"
-    )
-    try:
-        r = get(url).get("rows", [])
-    except Exception:  # noqa: BLE001
-        r = []
-    val = (r[0]["row"]["repo"], r[0]["row"]["base_commit"]) if r else (None, None)
+    val = (None, None)
+    for ds, split in SWEBENCH_SOURCES:
+        where = urllib.parse.quote(f"\"instance_id\"='{instance_id}'")
+        url = (
+            f"{BASE}/filter?dataset={urllib.parse.quote(ds, safe='')}"
+            f"&config=default&split={split}&where={where}&length=1"
+        )
+        try:
+            r = get(url, tries=2).get("rows", [])
+        except Exception:  # noqa: BLE001
+            r = []
+        if r:
+            val = (r[0]["row"].get("repo"), r[0]["row"].get("base_commit"))
+            break
     cache[instance_id] = val
     return val
 
@@ -83,18 +95,20 @@ def main():
     # instance. Repo+base_commit are looked up lazily in stage 3 (most rows are
     # SWE-bench-extra instances not in the main set, and the headline number
     # needs only `resolved`, which is in the trajectory row itself).
+    # The dataset has only ~100 DISTINCT instances (each retried many times for
+    # fine-tuning). To capture as many distinct ones as possible, sweep the whole
+    # dataset in pages and keep the FIRST trajectory per instance. `n` caps the
+    # number of distinct instances collected.
     page = 100
-    n_pages = max(1, (n * 4) // page)
-    stride = max(page, TOTAL // n_pages)
     written = 0
     seen = set()
     with open(out_path, "w") as out:
         offset = 0
         while written < n and offset < TOTAL:
             batch = rows(TRAJ_DS, offset, page)
-            offset += stride
+            offset += page
             if not batch:
-                continue
+                break
             for r in batch:
                 row = r["row"]
                 iid = row["instance_id"]
@@ -112,8 +126,9 @@ def main():
                 written += 1
                 if written >= n:
                     break
-            print(f"  fetched {written}/{n} ({len(seen)} instances, offset {offset})", file=sys.stderr)
-    print(f"wrote {written} trajectories to {out_path}", file=sys.stderr)
+            if offset % 2000 == 0:
+                print(f"  swept to offset {offset}: {written} distinct instances", file=sys.stderr)
+    print(f"wrote {written} distinct instances to {out_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":

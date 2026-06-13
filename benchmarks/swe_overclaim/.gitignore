@@ -1,3 +1,5 @@
 trajectories.jsonl
 overclaims.jsonl
 replay_hits.jsonl
+__pycache__/
+*.pyc

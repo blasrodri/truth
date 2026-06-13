@@ -25,6 +25,8 @@ import subprocess
 import sys
 import tempfile
 
+from fetch import swebench_lookup
+
 TRUTH = None  # resolved in main()
 
 
@@ -83,6 +85,11 @@ def main():
     TRUTH = sys.argv[3] if len(sys.argv) > 3 else os.path.expanduser("~/.cargo/bin/truth")
 
     rows = [json.loads(line) for line in open(path)]
+    # Resolve repo+base_commit lazily for rows missing it (fetch.py defers this).
+    cache = {}
+    for r in rows:
+        if not (r.get("repo") and r.get("base_commit")):
+            r["repo"], r["base_commit"] = swebench_lookup(r["instance_id"], cache)
     mappable = [r for r in rows if r.get("repo") and r.get("base_commit")]
     print(f"{len(mappable)}/{len(rows)} trajectories map to a repo+commit; replaying up to {cap}", file=sys.stderr)
 
