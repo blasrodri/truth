@@ -444,12 +444,63 @@ impl ClaimExtractor for RegexExtractor {
         if !has_pure_route(text) {
             // Reject articles / verbs / filler that are never symbol names.
             const NOT_SYMBOL: &[&str] = &[
-                "the", "a", "an", "this", "that", "it", "new", "old", "my", "our", "their", "its",
-                "some", "any", "no", "added", "removed", "deleted", "renamed", "created",
-                "dropped", "wired", "made", "is", "was", "exists", "exist", "ex", "still",
-                "present", "called", "named", // prepositions: "function IN refs.rs" must not
+                "the",
+                "a",
+                "an",
+                "this",
+                "that",
+                "it",
+                "new",
+                "old",
+                "my",
+                "our",
+                "their",
+                "its",
+                "some",
+                "any",
+                "no",
+                "added",
+                "removed",
+                "deleted",
+                "renamed",
+                "created",
+                "dropped",
+                "wired",
+                "made",
+                "is",
+                "was",
+                "exists",
+                "exist",
+                "ex",
+                "still",
+                "present",
+                "called",
+                "named", // prepositions: "function IN refs.rs" must not
                 // yield `in` as the symbol name — the real name is name-first ("X function").
-                "in", "to", "from", "at", "on", "of", "into", "with", "for",
+                "in",
+                "to",
+                "from",
+                "at",
+                "on",
+                "of",
+                "into",
+                "with",
+                "for",
+                // auxiliary verbs: "the X method HAS BEEN added" must not yield
+                // `has` as the symbol — "method has" matched kind-first (wild
+                // false-contradiction caught by truth on itself, 2026-06-13).
+                "has",
+                "have",
+                "had",
+                "been",
+                "being",
+                "be",
+                "will",
+                "would",
+                "can",
+                "could",
+                "should",
+                "successfully",
             ];
             let ok = |m: regex::Match| {
                 let s = m.as_str().to_string();
@@ -846,6 +897,19 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
         "library",
         "libraries",
         "lib",
+        // verbs/adverbs that follow "depend on it" prose — never packages.
+        // "the headline doesn't depend on it — it needs only ..." once mined
+        // `needs` as a package (caught by truth on itself, 2026-06-13).
+        "needs",
+        "need",
+        "needed",
+        "requires",
+        "require",
+        "only",
+        "just",
+        "now",
+        "still",
+        "really",
     ];
     let plausible = |cand: &str| -> bool {
         cand.len() >= 2
@@ -909,14 +973,30 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
         || has_word(lower, "crates")
         || has_word(lower, "package");
 
-    // Package-AFTER-cue, most specific cue first.
+    // Package-AFTER-cue, most specific cue first. The generic `the` cue is too
+    // weak to license a bare prose word even with a dep marker present — "the
+    // eval ground truth" in "...doesn't depend on it, it needs only the eval..."
+    // mined `eval` (caught by truth on itself). After `the`, demand a package
+    // SHAPE; only the verb/preposition cues may take a bare name.
     for cue in AFTER {
         if let Some(i) = lower_tokens.iter().position(|t| t == cue) {
+            let weak_cue = *cue == "the";
+            // The package sits RIGHT AFTER the cue (modulo one article/adjective):
+            // "depends on serde", "on the serde crate". Scanning past many
+            // stopwords grabbed a word from a later clause — "...depend on it, it
+            // needs only the eval..." mined `eval`, 6 tokens downstream across a
+            // comma. Allow skipping at most two stopwords, then give up.
+            let mut skipped = 0;
             for cand in lower_tokens.iter().skip(i + 1) {
                 if STOP.contains(&cand.as_str()) {
+                    skipped += 1;
+                    if skipped > 2 {
+                        break;
+                    }
                     continue;
                 }
-                if package_shaped(cand) || (strong_dep_marker && plausible(cand)) {
+                let take_bare = strong_dep_marker && plausible(cand) && !weak_cue;
+                if package_shaped(cand) || take_bare {
                     return Some(cand.clone());
                 }
                 break;
@@ -1171,6 +1251,27 @@ mod tests {
         let c =
             RegexExtractor.extract("I added a dependency_index_populated field to VerdictInput");
         assert_ne!(c.claim_type, ClaimType::DependencyUsed);
+    }
+
+    #[test]
+    fn aux_verb_after_kind_is_not_the_symbol_name() {
+        // "the get_view_plugins method has been added" — kind-first matched
+        // "method has" and yielded `has` as the symbol (truth flagged this on
+        // its own summary, 2026-06-13). The name is the identifier BEFORE the
+        // kind, never the auxiliary verb after it.
+        let c = RegexExtractor.extract("The get_view_plugins method has been successfully added");
+        assert_eq!(c.claim_type, ClaimType::SymbolExists);
+        assert_eq!(c.subject.as_deref(), Some("get_view_plugins"));
+    }
+
+    #[test]
+    fn depend_on_pronoun_does_not_mine_a_downstream_word() {
+        // "...doesn't depend on it, it needs only the eval ground truth" mined
+        // `eval` (6 tokens past the cue, across a comma) as a dependency. The
+        // package sits right after the cue, not in a later clause — refuse.
+        let c = RegexExtractor
+            .extract("The 30% headline does not depend on it, it needs only the eval ground truth");
+        assert_ne!(c.claim_type, ClaimType::DependencyUsed, "{:?}", c.subject);
     }
 
     #[test]
