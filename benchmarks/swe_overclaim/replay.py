@@ -84,18 +84,28 @@ def main():
     global TRUTH
     TRUTH = sys.argv[3] if len(sys.argv) > 3 else os.path.expanduser("~/.cargo/bin/truth")
 
+    import time
+
     rows = [json.loads(line) for line in open(path)]
-    # Resolve repo+base_commit lazily for rows missing it (fetch.py defers this).
+    # Resolve repo+base_commit lazily, ONLY for the first `cap` rows we'll
+    # actually replay — and with a delay between lookups, because the HF
+    # datasets-server rate-limits (429) per-instance filter queries under load.
     cache = {}
+    resolved = []
     for r in rows:
+        if len(resolved) >= cap:
+            break
         if not (r.get("repo") and r.get("base_commit")):
             r["repo"], r["base_commit"] = swebench_lookup(r["instance_id"], cache)
-    mappable = [r for r in rows if r.get("repo") and r.get("base_commit")]
-    print(f"{len(mappable)}/{len(rows)} trajectories map to a repo+commit; replaying up to {cap}", file=sys.stderr)
+            time.sleep(2)  # be gentle with the datasets-server
+        if r.get("repo") and r.get("base_commit"):
+            resolved.append(r)
+    mappable = resolved
+    print(f"{len(mappable)} trajectories mapped to a repo+commit; replaying", file=sys.stderr)
 
     tally = {"instances": 0, "supported": 0, "contradicted": 0, "refused": 0, "clone_fail": 0}
     hits = []
-    for r in mappable[:cap]:
+    for r in mappable:
         with tempfile.TemporaryDirectory(prefix="truth-swe-") as dest:
             if not clone_at(r["repo"], r["base_commit"], dest):
                 tally["clone_fail"] += 1

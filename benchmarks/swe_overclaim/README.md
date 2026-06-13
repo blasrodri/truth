@@ -39,7 +39,20 @@ eval). Stage 3 (`replay.py`) goes further for a curated subset: it checks out th
 instance repo at `base_commit`, applies the agent's patch, and runs the agent's
 **concrete** claims (config values, symbols, routes) through truth's actual
 deterministic verdict engine — proving truth's *engine*, not just a regex,
-contradicts them. Heavier (per-instance git clone), so it runs on a sample.
+contradicts them.
+
+**Status:** the harness is built and its logic validated, but it's heavy and
+network-bound — each instance does an HF metadata lookup + a full `git clone`,
+and the HuggingFace datasets-server rate-limits (HTTP 429) the per-instance repo
+lookups under load. Run it slowly (small `cap`, with delays) rather than at
+scale:
+
+```bash
+python3 replay.py trajectories.jsonl 5     # 5 instances, expect minutes each
+```
+
+The headline number above (stage 2) does **not** depend on stage 3 — it needs
+only the eval ground truth, which is in the trajectory rows themselves.
 
 ## Result (n = 100 distinct instances)
 
