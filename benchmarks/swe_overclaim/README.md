@@ -1,15 +1,37 @@
-# SWE-agent over-claim benchmark
+# SWE-agent over-claim benchmark — and truth's calibration set
 
-The honest, **external** proof that `truth` catches real agent over-claims —
-not against truth's own fixtures, but against real agent attempts on real GitHub
-issues, where the SWE-bench evaluation tells us the ground truth.
+Two things, and the second is the point:
+
+1. **Measure** how often real coding agents over-claim, against real GitHub
+   issues with SWE-bench's pass/fail as ground truth. (The 30% headline below.)
+2. **Calibrate truth on it.** A number nobody acts on is useless. This dataset
+   of real agent claims + ground truth is a *test set for truth itself*: run
+   truth's engine over the claims and bucket every verdict —
+   - **CAUGHT** — Contradicted a concrete claim on a failed task ✓
+   - **refused** — couldn't check it (task-level "it's fixed"): honest, not a miss
+   - **FALSE PASS** — Supported a claim on a failed task: the **dangerous** miss
+   - (on resolved tasks: Supported is right, Contradicted is a false accusation)
+
+   Every false pass and every false accusation is a concrete sentence + repo
+   state where truth is wrong — a fix to make. `calibrate.py` produces that list.
+   This is how the 30% earns its keep: it doesn't just describe the problem, it
+   drives truth's accuracy.
 
 ## The claim being measured
 
 Coding agents over-report success. On a task that the test suite says **failed**,
 a trajectory whose prose says *"the issue is resolved / tests pass"* is a
-**provable over-claim** — exactly what `truth` exists to catch. We measure how
-often it happens, using data nobody can argue with: the SWE-bench eval result.
+**provable over-claim**. We measure how often it happens, using data nobody can
+argue with: the SWE-bench eval result.
+
+### What truth catches vs. refuses (the honest split)
+
+Not every over-claim is checkable. "the `get_view_plugins` method has been added"
+is concrete — truth checks whether it's in the code. "the issue has been
+resolved" is task-level — truth **refuses** it (it doesn't run the tests), and a
+refusal is honest, not a catch. So the 30% is the *problem size*; `calibrate.py`
+measures the part truth can actually adjudicate — and, critically, whether it
+ever **false-passes** a concrete lie (it must not).
 
 ## Data
 
