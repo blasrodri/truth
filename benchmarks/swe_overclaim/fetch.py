@@ -14,6 +14,7 @@ API. Writes one JSONL row per trajectory to trajectories.jsonl:
 the raw material truth's extractor + engine will judge in stage 2.
 """
 import json
+import os
 import sys
 import time
 import urllib.parse
@@ -102,6 +103,14 @@ def main():
     page = 100
     written = 0
     seen = set()
+    sb_cache = {}
+    # Capture repo+base_commit ONCE here (rate-limited HF lookup, with backoff),
+    # persisting into the columns calibrate.py/replay.py read. Doing it at fetch
+    # time means the heavy replay stages need ZERO network and can check out the
+    # EXACT tree the agent's patch was written against (USE_BASE_COMMIT fidelity
+    # by default), instead of today's default branch. Off by default (it's slow);
+    # set FETCH_BASE_COMMIT=1 to enable.
+    want_base = os.environ.get("FETCH_BASE_COMMIT") == "1"
     with open(out_path, "w") as out:
         offset = 0
         while written < n and offset < TOTAL:
@@ -115,11 +124,15 @@ def main():
                 if iid in seen:
                     continue
                 seen.add(iid)
+                repo, base = (None, None)
+                if want_base:
+                    repo, base = swebench_lookup(iid, sb_cache)
+                    time.sleep(2)  # be gentle with the datasets-server
                 out.write(json.dumps({
                     "instance_id": iid,
                     "resolved": bool(row.get("target")),
-                    "repo": None,
-                    "base_commit": None,
+                    "repo": repo,
+                    "base_commit": base,
                     "generated_patch": row.get("generated_patch") or "",
                     "agent_text": agent_prose(row.get("trajectory") or []),
                 }) + "\n")

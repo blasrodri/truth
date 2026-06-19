@@ -264,6 +264,7 @@ impl ClaimExtractor for RegexExtractor {
         if !has_pure_route(text)
             && !has_value_pattern(text, &lower)
             && !has_symbol_kind_phrase(text)
+            && !has_import_phrase(&lower)
         {
             if let Some(path) = file_subject(text) {
                 let expected = if ["deleted", "removed", "dropped"]
@@ -321,6 +322,12 @@ impl ClaimExtractor for RegexExtractor {
         // the identifier `dependency_index_populated` in "added a
         // dependency_index_populated field") must NOT read as a dependency
         // claim. Substring matching here mis-typed symbol claims as dep claims.
+        // "import"/"imports"/"imported" are dependency cues too: an added import
+        // IS a dependency-use claim ("added an os import to fetch.py"). Without
+        // this, "added an os import" matched the file_changed branch on the
+        // co-mentioned file (fetch.py) and CONTRADICTED when the file pre-existed
+        // ("claimed added, but the diff shows fetch.py was modified") — an FP the
+        // SWE-bench calibration surfaced on truth's own working tree.
         let dep_phrasing = has_word(&lower, "dependency")
             || has_word(&lower, "dependencies")
             || lower.contains("depends on")
@@ -328,7 +335,10 @@ impl ClaimExtractor for RegexExtractor {
             || has_word(&lower, "crate")
             || has_word(&lower, "crates")
             || has_word(&lower, "package")
-            || has_word(&lower, "library");
+            || has_word(&lower, "library")
+            || has_word(&lower, "import")
+            || has_word(&lower, "imports")
+            || has_word(&lower, "imported");
         if dep_phrasing && !has_pure_route(text) {
             if let Some(dep) = dependency_name(text, &lower) {
                 let expects_absent = lower.contains("no longer")
@@ -778,6 +788,13 @@ fn has_symbol_kind_phrase(text: &str) -> bool {
     res().symbol.is_match(text) || res().symbol_post.is_match(text)
 }
 
+/// Whether the sentence carries an "import" cue ("added an os import"). An added
+/// import is a dependency-use claim, so a co-mentioned filename is a location,
+/// not a file_changed subject. `lower` is expected lowercase.
+fn has_import_phrase(lower: &str) -> bool {
+    has_word(lower, "import") || has_word(lower, "imports") || has_word(lower, "imported")
+}
+
 /// Whole-word containment: `word` appears in `haystack` bounded by non-alnum
 /// (and non-`_`/`-`) on both sides. So "dependency" matches in "a dependency
 /// file" but NOT inside the identifier "dependency_index_populated". `haystack`
@@ -918,6 +935,15 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
         "now",
         "still",
         "really",
+        // "import" is a dependency CUE word, not a package name; "cue"/"cues"
+        // are common nouns. "added import as a dependency cue" once mined
+        // `import`/`cue` as the package and contradicted a true sentence
+        // (verify-turn over a summary, caught on truth itself 2026-06-19).
+        "import",
+        "imports",
+        "imported",
+        "cue",
+        "cues",
     ];
     let plausible = |cand: &str| -> bool {
         cand.len() >= 2
@@ -1315,6 +1341,38 @@ mod tests {
         let c = RegexExtractor.extract("I added a dependency_index_populated function in refs.rs");
         assert_eq!(c.claim_type, ClaimType::SymbolExists);
         assert_eq!(c.subject.as_deref(), Some("dependency_index_populated"));
+    }
+
+    #[test]
+    fn added_import_is_a_dependency_claim_not_file_claim() {
+        // "added an os import to fetch.py" — the import is the assertion; the
+        // file is a LOCATION. Must NOT be a FileChanged/added claim on fetch.py
+        // (which CONTRADICTED when fetch.py pre-existed: "claimed added, but the
+        // diff shows fetch.py was modified") — an FP the SWE-bench calibration
+        // loop surfaced on truth's own working tree.
+        let c = RegexExtractor.extract("I added an os import to fetch.py");
+        assert_ne!(
+            c.claim_type,
+            ClaimType::FileChanged,
+            "import claim must not type as file_changed: {:?}",
+            c.subject
+        );
+    }
+
+    #[test]
+    fn bare_import_cue_word_is_not_a_dependency_subject() {
+        // "added import as a dependency cue" — meta-prose about an extractor
+        // cue, not a real dependency claim. `import`/`cue` must NOT be mined as
+        // the package (it contradicted a true sentence when verify-turn ran over
+        // a summary). Either not a dep claim, or no bogus subject.
+        let c = RegexExtractor.extract("I added import as a dependency cue in extract.rs");
+        if c.claim_type == ClaimType::DependencyUsed {
+            let subj = c.subject.as_deref().unwrap_or("");
+            assert!(
+                subj != "import" && subj != "cue" && subj != "imports",
+                "bare cue word mined as package: {subj:?}"
+            );
+        }
     }
 
     #[test]

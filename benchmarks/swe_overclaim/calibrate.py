@@ -69,30 +69,48 @@ def base_commit(instance_id):
 USE_BASE_COMMIT = os.environ.get("USE_BASE_COMMIT") == "1"
 
 
-def setup_repo(instance_id, patch_text, dest):
-    """Clone owner/repo (default branch, or base_commit if opted in), apply patch."""
+def setup_repo(instance_id, patch_text, dest, commit=None):
+    """Clone owner/repo at base_commit (preferred) or default branch, apply patch.
+
+    The agent's `generated_patch` IS its session diff. We apply it but leave it
+    UNSTAGED in the working tree (no commit, no `git add`) so that truth's
+    diff-based checks (`git diff HEAD`) see exactly what the agent changed this
+    session — which makes file_changed / only_changed / rename claims checkable,
+    not just symbol/value existence. Returns True iff the patch applied cleanly
+    (a dirty/partial apply means the tree truth indexes isn't what the agent
+    claimed about, so we report it as a setup failure rather than scoring noise).
+    """
     slug = repo_of(instance_id)
     url = f"https://github.com/{slug}.git"
     run(["git", "init", "-q", dest])
+    run(["git", "-C", dest, "config", "user.email", "cal@truth"])
+    run(["git", "-C", dest, "config", "user.name", "truth-cal"])
     run(["git", "-C", dest, "remote", "add", "origin", url])
-    commit = base_commit(instance_id) if USE_BASE_COMMIT else None
+    # base_commit fidelity: prefer the commit carried in the row (free, captured
+    # at fetch time), else look it up only if explicitly opted in.
+    if not commit and USE_BASE_COMMIT:
+        commit = base_commit(instance_id)
     fetched = False
     if commit:
         if run(["git", "-C", dest, "fetch", "-q", "--depth", "1", "origin", commit]).returncode == 0:
             run(["git", "-C", dest, "checkout", "-q", commit])
             fetched = True
     if not fetched:
-        # Default branch (shallow) — no HF lookup, no rate limit.
+        # Default branch (shallow) — no HF lookup, no rate limit. Lower fidelity:
+        # the patch was written against base_commit, so it may not apply cleanly.
         if run(["git", "-C", dest, "fetch", "-q", "--depth", "1", "origin", "HEAD"]).returncode != 0:
             return False
         run(["git", "-C", dest, "checkout", "-q", "FETCH_HEAD"])
-    # Apply the agent's patch (the code state it is claiming about). Best-effort.
+    # Apply the agent's patch into the WORKING TREE, unstaged. Require a clean
+    # apply (plain `git apply`) — a 3way/reject fallback yields a tree that
+    # doesn't match what the agent claimed, which would poison the verdict.
     if patch_text.strip():
         pf = os.path.join(dest, ".agent.patch")
         open(pf, "w").write(patch_text)
-        for args in (["apply"], ["apply", "--3way"], ["apply", "--reject", "--whitespace=fix"]):
-            if run(["git", "-C", dest, *args, ".agent.patch"]).returncode == 0:
-                break
+        applied = run(["git", "-C", dest, "apply", ".agent.patch"]).returncode == 0
+        os.remove(pf)
+        if not applied:
+            return False
     return True
 
 
@@ -114,41 +132,49 @@ def judged_overclaim(instance_id):
     return None
 
 
-# Claim types whose verdict is TRUSTWORTHY in a fresh clone: they check against
-# the INDEXED CODE (does this symbol/value/route exist?). Diff-based types
-# (file_changed / only_changed / change_count / rename) check `git diff HEAD`,
-# which in a clone+patch does NOT reflect "what the agent changed in its session"
-# — so their verdicts here are setup artifacts, not real signal. We record them
-# but don't count them toward catch/false-pass.
+# Reference only (verify-turn now reports `checkable` per claim, so we no longer
+# gate on these): the claim types whose verdict is trustworthy in this harness.
+# Code types check the INDEXED code (does this symbol/value/route exist?). Diff
+# types check `git diff HEAD` — TRUSTWORTHY too now that setup_repo leaves the
+# agent's patch UNSTAGED, so the diff IS the agent's session diff. The verdicts
+# we still can't trust are those needing a recorded COMMAND run ("tests pass") —
+# the agent's trajectory didn't go through `truth run`, so there's no receipt.
 CODE_TYPES = {
-    "symbol_exists",
-    "config_value",
-    "retry_count",
-    "timeout_value",
-    "version_required",
-    "route_exists",
-    "env_var_exists",
-    "dependency_used",
+    "symbol_exists", "config_value", "retry_count", "timeout_value",
+    "version_required", "route_exists", "env_var_exists", "dependency_used",
 }
+DIFF_TYPES = {"file_changed", "only_changed", "change_count", "rename"}
+CHECKABLE = CODE_TYPES | DIFF_TYPES
 
 
 def truth_verdicts(dest, claims):
     run([TRUTH, "init"], cwd=dest)
+    # truth's own scaffolding (.truth/, the init-written .gitignore) would show
+    # up in `git diff HEAD` and pollute only_changed / change_count. Commit it on
+    # a throwaway so it's part of HEAD, leaving ONLY the agent's patch as the diff.
+    run(["git", "-C", dest, "add", "-A", ".truth", ".gitignore"])
+    run(["git", "-C", dest, "commit", "-q", "-m", "truth scaffold", "--no-verify"])
     run([TRUTH, "index"], cwd=dest)
     buckets = {"supported": 0, "contradicted": 0, "refused": 0, "diff_skipped": 0}
     details = []
     for c in claims:
-        r = run([TRUTH, "check", c, "--json"], cwd=dest, timeout=60)
+        # Use `verify-turn`, the SAME path the product/MCP surface uses (LLM
+        # extractor when enabled), not the local-only `check` regex extractor —
+        # otherwise the calibration measures a weaker extractor than ships.
+        r = run([TRUTH, "verify-turn", c, "--repo", dest, "--json"], cwd=dest, timeout=120)
         try:
             v = json.loads(r.stdout)
-            st = v["status"]
-            ctype = (v.get("claim") or {}).get("claim_type", "unknown")
+            cl = (v.get("claims") or [{}])[0]
+            st = cl.get("status", "refused")
+            checkable = cl.get("checkable", False)
         except Exception:  # noqa: BLE001
-            st, ctype = "refused", "unknown"
-        # Only code-checkable claim types yield trustworthy verdicts in a clone.
-        if ctype not in CODE_TYPES and st != "refused":
+            st, checkable = "refused", False
+        # A non-refused verdict on a claim verify-turn deems non-checkable is an
+        # extractor mis-type, not signal — bucket separately (it's not a catch
+        # or a false-pass, just an extraction gap to fix).
+        if not checkable and st != "refused":
             buckets["diff_skipped"] += 1
-            details.append({"claim": c, "status": "diff_skipped", "claim_type": ctype})
+            details.append({"claim": c, "status": "diff_skipped", "checkable": checkable})
             continue
         if st == "supported":
             buckets["supported"] += 1
@@ -156,7 +182,7 @@ def truth_verdicts(dest, claims):
             buckets["contradicted"] += 1
         else:
             buckets["refused"] += 1
-        details.append({"claim": c, "status": st, "claim_type": ctype})
+        details.append({"claim": c, "status": st, "checkable": checkable})
     return buckets, details
 
 
@@ -185,7 +211,8 @@ def main():
     false_passes, catches = [], []
     for r, quote in targets:
         with tempfile.TemporaryDirectory(prefix="truth-cal-") as dest:
-            if not setup_repo(r["instance_id"], r["generated_patch"], dest):
+            if not setup_repo(r["instance_id"], r["generated_patch"], dest,
+                              commit=r.get("base_commit")):
                 agg["setup_fail"] += 1
                 continue
             buckets, details = truth_verdicts(dest, [quote])
@@ -206,8 +233,8 @@ def main():
     print("=" * 60)
     print(f"instances run            {agg['instances']}  (setup failures: {agg['setup_fail']})")
     print(f"over-claim sentences     {total + agg['diff_skipped']}")
-    print(f"  diff-based (excluded)  {agg['diff_skipped']}  ← file/rename claims need a LIVE session diff, not a clone")
-    print(f"  -- code-checkable: --")
+    print(f"  mis-typed (excluded)   {agg['diff_skipped']}  ← extractor produced a non-checkable type, not refused")
+    print(f"  -- checkable (code + session-diff): --")
     print(f"  CAUGHT (contradicted)  {agg['contradicted']}  ← truth flagged a false component claim")
     print(f"  refused (can't check)  {agg['refused']}  ← task-level (\"it's resolved\"); by design")
     print(f"  supported              {agg['supported']}  ← a component claim that is LITERALLY TRUE")

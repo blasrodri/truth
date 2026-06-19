@@ -63,18 +63,40 @@ instance repo at `base_commit`, applies the agent's patch, and runs the agent's
 deterministic verdict engine — proving truth's *engine*, not just a regex,
 contradicts them.
 
-**Status:** the harness is built and its logic validated, but it's heavy and
-network-bound — each instance does an HF metadata lookup + a full `git clone`,
-and the HuggingFace datasets-server rate-limits (HTTP 429) the per-instance repo
-lookups under load. Run it slowly (small `cap`, with delays) rather than at
-scale:
+**Status:** the harness is built and validated. The HF rate-limit (HTTP 429) is
+no longer in the hot path: `fetch.py` captures `repo`+`base_commit` ONCE at fetch
+time (`FETCH_BASE_COMMIT=1`), so `calibrate.py`/`replay.py` need zero per-instance
+lookups — they check out the exact tree the agent's patch targets and clone only.
 
 ```bash
-python3 replay.py trajectories.jsonl 5     # 5 instances, expect minutes each
+FETCH_BASE_COMMIT=1 python3 fetch.py 100   # capture base_commit once (slow)
+python3 calibrate.py trajectories.jsonl 30 # run the engine over the over-claims
 ```
 
 The headline number above (stage 2) does **not** depend on stage 3 — it needs
 only the eval ground truth, which is in the trajectory rows themselves.
+
+### Calibration result (`calibrate.py`, truth 0.3.9, 2026-06-19)
+
+`base_commit` fidelity (95/100 instances) + the agent patch left **unstaged** (so
+diff-based claims check the real session diff) + verdicts via `truth verify-turn`
+(the same extractor the product ships, not the local `check` regex):
+
+```
+over-claims adjudicated   26 / 27   (1 setup failure; was 3/27 before)
+  refused (task-level)    23        ← "the issue is resolved" — refused by design
+  supported (component)    3        ← all hand-verified TRUE in the agent's patch
+  CONTRADICTED             0
+  FALSE PASS               0  ✓      ← the safety property: never supports a lie
+```
+
+The 3 `supported` verdicts are component claims that are *literally true*
+(`get_view_plugins` was added, `push.py` was edited, `field_names` was added) —
+inside trajectories the SWE-bench eval still **failed**. That's the honest split:
+truth supports the true component claim and refuses the task-level over-claim; it
+does not false-pass. This loop is also what surfaced the import-claim extractor FP
+("added an os import to X" mis-typed as a file-added claim), now fixed with a
+regression test.
 
 ## Result (n = 100 distinct instances)
 

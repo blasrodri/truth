@@ -269,16 +269,50 @@ fn is_plausible_claim(s: &str) -> bool {
     if INTENT.iter().any(|p| lower.starts_with(p)) {
         return false;
     }
-    if words >= 3 {
-        return true;
+    // Meta-prose: the agent talking ABOUT claims/verdicts rather than asserting
+    // a fact ("noted in memory: truth still FPs the import subject", "this was a
+    // false positive", "the loop closed"). Judging these as claims is what
+    // produced the self-referential false-accusations when verify-turn ran over
+    // a SUMMARY of the work instead of a change report. These phrases never
+    // appear in a genuine "I changed X" assertion, so dropping them is safe.
+    const META: &[&str] = &[
+        "false positive",
+        "false accusation",
+        "false pass",
+        "over-claim",
+        "overclaim",
+        " fps ",
+        " fp ",
+        "noted in memory",
+        "in memory as",
+        "the loop ",
+        "this means",
+        "what made that",
+        "calibration",
+        "regression test",
+        "recorded via",
+        "the safety property",
+    ];
+    if META.iter().any(|p| lower.contains(p)) {
+        return false;
     }
-    // Short clause: keep only if it has a concrete, checkable signal.
+    // A quoted example claim ("...as a dependency cue") is the agent CITING a
+    // sentence, not asserting it. When most of the segment sits inside quotes
+    // it's an example under discussion, not the agent's own claim.
+    if is_quoted_example(s) {
+        return false;
+    }
+    // Concrete, checkable anchors. A genuine change claim names a path, a
+    // number, an ALL_CAPS constant, a backticked identifier, a change verb, or a
+    // command-success word. Narrative recap ("it drove a real engine fix") has
+    // none of these.
     let lower = s.to_ascii_lowercase();
     let has_path = s.contains('/');
     let has_number = s.chars().any(|c| c.is_ascii_digit());
     let has_const = s
         .split_whitespace()
         .any(|w| w.len() >= 3 && w.chars().all(|c| c.is_ascii_uppercase() || c == '_'));
+    let has_backtick = s.contains('`');
     let has_verb = ["added", "removed", "deleted", "dropped", "created", "wired"]
         .iter()
         .any(|v| lower.contains(v));
@@ -287,7 +321,42 @@ fn is_plausible_claim(s: &str) -> bool {
     let has_success = ["pass", "green", "compiles", "clean"]
         .iter()
         .any(|v| lower.contains(v));
-    has_path || has_number || has_const || has_verb || has_success
+    let has_anchor = has_path || has_number || has_const || has_backtick || has_verb || has_success;
+
+    // A segment is a claim only if it carries a concrete anchor OR is phrased as
+    // the agent reporting its own action ("I …", "we …"). Everything else is
+    // narrative/recap ("the fix is the gate", "it drove a real engine fix", "not
+    // endless per-word patches") — judging it as a claim is what produced the
+    // self-referential false-accusations when verify-turn ran over a summary.
+    // This replaces a permissive "any 3+ word segment is a claim" rule, which
+    // admitted anchorless prose wholesale.
+    let agent_led = lower.starts_with("i ")
+        || lower.starts_with("i'")
+        || lower.starts_with("we ")
+        || lower.starts_with("we'");
+    has_anchor || agent_led
+}
+
+/// Whether a segment carries a quoted example — the agent citing a sentence
+/// (e.g. discussing a claim phrasing) rather than asserting it. True when a
+/// double-quoted span either dominates the segment OR is itself a multi-word
+/// phrase: a ≥3-word quote inside narration ("my sentence \"added import as a
+/// cue\" fired") is a citation, not the agent's own claim, even when trailing
+/// prose dilutes it below half.
+fn is_quoted_example(s: &str) -> bool {
+    let first = s.find('"');
+    let last = s.rfind('"');
+    match (first, last) {
+        (Some(a), Some(b)) if b > a + 1 => {
+            let inside_str = &s[a + 1..b];
+            let inside = inside_str.chars().filter(|c| !c.is_whitespace()).count();
+            let total = s.chars().filter(|c| !c.is_whitespace()).count();
+            let dominates = total > 0 && inside * 2 >= total;
+            let multiword_quote = inside_str.split_whitespace().count() >= 3;
+            dominates || multiword_quote
+        }
+        _ => false,
+    }
 }
 
 /// Run a full turn verification against the indexed repo / diff / logs.
@@ -588,6 +657,26 @@ mod tests {
     }
 
     #[test]
+    fn meta_prose_about_claims_is_not_a_claim() {
+        // Summaries/discussion ABOUT truth's own verdicts are not assertions
+        // about code — judging them produced self-referential false accusations
+        // when verify-turn ran over a summary rather than a change report.
+        let segs = segment(
+            "noted in memory: truth still FPs the bare-word import subject. \
+             this was a false positive in the calibration. the loop closed. \
+             I set MAX_RETRIES to 5 in src/config.rs",
+        );
+        assert_eq!(segs.len(), 1, "only the real change claim survives: {segs:?}");
+        assert!(segs[0].contains("MAX_RETRIES"));
+        // A quoted example claim is a citation, not an assertion.
+        let quoted = segment("my summary sentence \"added import as a dependency cue\" fired");
+        assert!(
+            !quoted.iter().any(|s| s.contains("dependency cue")),
+            "quoted example must not be a claim: {quoted:?}"
+        );
+    }
+
+    #[test]
     fn markdown_furniture_is_not_a_claim() {
         // Table rows and blockquotes judged as claims produced garbage
         // verdicts in the wild.
@@ -598,6 +687,77 @@ mod tests {
         );
         assert_eq!(segs.len(), 1, "{segs:?}");
         assert!(segs[0].contains("MAX_RETRIES"));
+    }
+
+    #[test]
+    fn summary_prose_corpus_does_not_leak_claims() {
+        // CALIBRATION INSTRUMENT for the false-ACCUSATION side. Each entry is
+        // real assistant SUMMARY prose (the kind that fired self-referential
+        // false-contradictions this session when verify-turn ran over a recap
+        // instead of a change report). The contract: a summary that asserts NO
+        // concrete code change must segment to ZERO surviving claims — so the
+        // engine can't contradict narrative. `max_claims` is the ceiling; a
+        // regression that re-opens the gate trips this. Real embedded change
+        // claims (the control cases) MUST still survive.
+        struct Case {
+            prose: &'static str,
+            max_claims: usize,
+            must_contain: Option<&'static str>,
+        }
+        let cases = [
+            // --- pure narrative: must leak NOTHING ---
+            Case {
+                prose: "noted in memory: truth still FPs the bare-word import \
+                        subject (e.g. my own summary sentence \"added import as a \
+                        dependency cue\") — a narrower sub-case than the one fixed",
+                max_claims: 0,
+                must_contain: None,
+            },
+            Case {
+                prose: "The loop closed concretely: this dataset didn't just \
+                        measure over-claims, it drove a real engine fix. This is \
+                        exactly the calibration cycle the README promises.",
+                max_claims: 0,
+                must_contain: None,
+            },
+            Case {
+                prose: "What made that possible: the safety property holds on a \
+                        now-meaningful sample, and zero false passes were observed \
+                        across the calibration.",
+                max_claims: 0,
+                must_contain: None,
+            },
+            Case {
+                prose: "truth's weakness is false accusations on prose, not false \
+                        passes. The fix is the gate, not endless per-word patches.",
+                max_claims: 0,
+                must_contain: None,
+            },
+            // --- control: narrative WRAPPING a real change claim. The claim
+            //     must survive; the surrounding recap must not inflate the count. ---
+            Case {
+                prose: "To recap what made that possible, I set MAX_RETRIES to 5 \
+                        in src/config.rs, and the calibration loop confirmed it.",
+                max_claims: 1,
+                must_contain: Some("MAX_RETRIES"),
+            },
+        ];
+        for c in &cases {
+            let segs = segment(c.prose);
+            assert!(
+                segs.len() <= c.max_claims,
+                "summary leaked {} claim(s) (max {}): {segs:?}\n  prose: {}",
+                segs.len(),
+                c.max_claims,
+                c.prose,
+            );
+            if let Some(needle) = c.must_contain {
+                assert!(
+                    segs.iter().any(|s| s.contains(needle)),
+                    "control case lost its real claim `{needle}`: {segs:?}",
+                );
+            }
+        }
     }
 
     fn report(verdicts: Vec<ClaimVerdict>) -> TurnReport {
