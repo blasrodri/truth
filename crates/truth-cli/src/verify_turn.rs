@@ -666,7 +666,11 @@ mod tests {
              this was a false positive in the calibration. the loop closed. \
              I set MAX_RETRIES to 5 in src/config.rs",
         );
-        assert_eq!(segs.len(), 1, "only the real change claim survives: {segs:?}");
+        assert_eq!(
+            segs.len(),
+            1,
+            "only the real change claim survives: {segs:?}"
+        );
         assert!(segs[0].contains("MAX_RETRIES"));
         // A quoted example claim is a citation, not an assertion.
         let quoted = segment("my summary sentence \"added import as a dependency cue\" fired");
