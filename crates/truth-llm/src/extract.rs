@@ -894,6 +894,22 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
         "on",
         "upon",
         "and",
+        // Connectives/prepositions that sit before the dep noun in pure prose —
+        // "a workspace WITH crates", "code FOR packages", "split INTO crates".
+        // Without these the BEFORE-cue loop took the function word right before
+        // "crate(s)/package" as the package name: "a Rust workspace with crates/"
+        // mined `with` and contradicted a true sentence (caught on truth itself
+        // 2026-06-23).
+        "with",
+        "for",
+        "from",
+        "by",
+        "in",
+        "into",
+        "via",
+        "at",
+        "or",
+        "but",
         "it",
         "is",
         "was",
@@ -1258,6 +1274,38 @@ mod tests {
         let f = RegexExtractor.extract("truth-ast has a tree-sitter-typescript dependency");
         assert_eq!(f.claim_type, ClaimType::DependencyUsed);
         assert_eq!(f.subject.as_deref(), Some("tree-sitter-typescript"));
+    }
+
+    #[test]
+    fn prose_describing_workspace_is_not_a_dependency_claim() {
+        // Caught on truth itself 2026-06-23: verify-turn over a true sentence,
+        // "this is the truth project, a Rust workspace with crates/". The
+        // BEFORE-cue loop saw `crates` (a STRONG_NOUN) and took the immediately
+        // preceding function word `with` as the package name, then the verify
+        // engine "contradicted" it on the omnipresent substring count. A
+        // connective sitting before the dep noun is never a package — the claim
+        // must not extract a dependency subject at all.
+        for text in [
+            "a Rust workspace with crates/",
+            "this is the truth project, a Rust workspace with crates/",
+            "we split the code into crates",
+            "the build is organized by packages",
+        ] {
+            let c = RegexExtractor.extract(text);
+            assert_ne!(
+                c.subject.as_deref(),
+                Some("with"),
+                "must not mine the connective as a package: {text}"
+            );
+            // None of these connectives are valid package names.
+            for stop in ["with", "into", "by", "for", "from"] {
+                assert_ne!(
+                    c.subject.as_deref(),
+                    Some(stop),
+                    "extracted connective `{stop}` as a dependency from: {text}"
+                );
+            }
+        }
     }
 
     #[test]
