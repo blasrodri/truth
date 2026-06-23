@@ -925,6 +925,15 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
         "packages",
         "project",
         "projects",
+        // Cargo/repo STRUCTURAL nouns — never package names. "a Rust workspace —
+        // crates/" mined `workspace` as the package (the token before the
+        // STRONG_NOUN `crates`), surviving the earlier `with` fix because the
+        // em-dash put a non-stopword right before `crates`. Surfaced by
+        // `truth stats --review` self-auditing the lie ledger (2026-06-23).
+        "workspace",
+        "workspaces",
+        "monorepo",
+        "monorepos",
         "we",
         "i",
         "uses",
@@ -975,6 +984,15 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
     // 2026-06-12). The BEFORE-cue path demands this shape; the explicit-verb
     // AFTER-cue path ("uses the serde crate") may take a bare name.
     let package_shaped = |cand: &str| -> bool {
+        // A STOP word is never a package, even when registry-SHAPED or backticked.
+        // Backticking `truth` / `crates` in prose ("the `truth` project, a Rust
+        // workspace — `crates/`") made the backtick branch treat the repo's own
+        // structural vocabulary as a dependency and contradict a true sentence —
+        // surfaced by `truth stats --review` (2026-06-23). The STOP check is the
+        // single chokepoint both the BEFORE- and AFTER-cue paths flow through.
+        if STOP.contains(&cand.to_ascii_lowercase().as_str()) {
+            return false;
+        }
         plausible(cand)
             && (cand.contains('-')
                 || cand.contains('_')
@@ -996,6 +1014,18 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
     //    library"), so it only counts when the name is registry-SHAPED.
     const STRONG_NOUN: &[&str] = &["dependency", "dependencies", "crate", "crates", "package"];
     const WEAK_NOUN: &[&str] = &["library"];
+    // Structural nouns that, when they FOLLOW a candidate, mark it as the NAME of
+    // a thing ("the `truth` project") rather than a dependency on it.
+    const NAMED_STRUCTURE: &[&str] = &[
+        "project",
+        "projects",
+        "workspace",
+        "workspaces",
+        "monorepo",
+        "monorepos",
+        "repo",
+        "repository",
+    ];
     for i in 1..lower_tokens.len() {
         let prev = &lower_tokens[i - 1];
         if STOP.contains(&prev.as_str()) {
@@ -1037,13 +1067,24 @@ fn dependency_name(text: &str, lower: &str) -> Option<String> {
             // needs only the eval..." mined `eval`, 6 tokens downstream across a
             // comma. Allow skipping at most two stopwords, then give up.
             let mut skipped = 0;
-            for cand in lower_tokens.iter().skip(i + 1) {
+            for (off, cand) in lower_tokens.iter().enumerate().skip(i + 1) {
                 if STOP.contains(&cand.as_str()) {
                     skipped += 1;
                     if skipped > 2 {
                         break;
                     }
                     continue;
+                }
+                // A backticked word right before a structural noun is the NAME of
+                // that thing, not a package: "the `truth` project", "the `web`
+                // workspace". Reject — naming a repo/workspace is not declaring a
+                // dependency on it (caught by `truth stats --review`, 2026-06-23).
+                let names_a_structure = lower_tokens
+                    .get(off + 1)
+                    .map(|n| NAMED_STRUCTURE.contains(&n.as_str()))
+                    .unwrap_or(false);
+                if names_a_structure {
+                    break;
                 }
                 let take_bare = strong_dep_marker && plausible(cand) && !weak_cue;
                 if package_shaped(cand) || take_bare {
@@ -1285,24 +1326,40 @@ mod tests {
         // engine "contradicted" it on the omnipresent substring count. A
         // connective sitting before the dep noun is never a package — the claim
         // must not extract a dependency subject at all.
+        // The em-dash variant ("a Rust workspace — crates/") survived the first
+        // `with` fix because the dash put a non-stopword (`workspace`) right
+        // before `crates`. `truth stats --review` self-auditing the lie ledger
+        // caught it (2026-06-23): structural Cargo nouns must also be STOPped.
         for text in [
             "a Rust workspace with crates/",
             "this is the truth project, a Rust workspace with crates/",
+            "this is the truth project (a Rust workspace — crates/)",
+            // Backticked repo/structural names: naming a thing is not depending
+            // on it. The backtick branch of package_shaped used to take these.
+            "Confirmed: this is the `truth` project (a Rust workspace — `crates/`)",
+            "the `web` workspace was renamed",
+            "a monorepo workspace package",
             "we split the code into crates",
             "the build is organized by packages",
         ] {
             let c = RegexExtractor.extract(text);
-            assert_ne!(
-                c.subject.as_deref(),
-                Some("with"),
-                "must not mine the connective as a package: {text}"
-            );
-            // None of these connectives are valid package names.
-            for stop in ["with", "into", "by", "for", "from"] {
+            // No connective, structural noun, or named repo is a valid package.
+            for stop in [
+                "with",
+                "into",
+                "by",
+                "for",
+                "from",
+                "workspace",
+                "monorepo",
+                "project",
+                "truth",
+                "web",
+            ] {
                 assert_ne!(
                     c.subject.as_deref(),
                     Some(stop),
-                    "extracted connective `{stop}` as a dependency from: {text}"
+                    "extracted non-package `{stop}` as a dependency from: {text}"
                 );
             }
         }
