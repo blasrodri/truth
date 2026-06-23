@@ -224,6 +224,10 @@ enum Command {
         /// Overwrite the record file if it already exists.
         #[arg(long)]
         force: bool,
+        /// Precision-gate mode: report false-contradictions (must be 0) and
+        /// recall (advisory), and exit non-zero ONLY on a false contradiction.
+        #[arg(long)]
+        precision: bool,
     },
     /// Extract candidate engineering claims from docs/text into a claim file.
     Claims {
@@ -498,7 +502,8 @@ fn run(command: Command) -> anyhow::Result<()> {
             json,
             record,
             force,
-        } => eval::eval(&fixture, json, record.as_deref(), force),
+            precision,
+        } => eval::eval(&fixture, json, record.as_deref(), force, precision),
         Command::Claims { paths, out, json } => claims::claims(&paths, out.as_deref(), json),
         Command::Report {
             claim_file,

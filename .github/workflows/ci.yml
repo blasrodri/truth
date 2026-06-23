@@ -25,3 +25,5 @@ jobs:
           cargo build --release -p truth-cli
           ./target/release/truth eval fixtures/eval/agent_claims.yaml
           ./target/release/truth eval fixtures/eval/basic.yaml
+      - name: Precision gate (false-contradictions == 0, hard)
+        run: ./scripts/precision_gate.sh ./target/release/truth

@@ -1,0 +1,232 @@
+{
+  "J-CPelletier__webcomix-7": {
+    "label": "inconclusive",
+    "reason": "The sentence claims a test ran successfully and the command works, which is a task-outcome claim that a patch cannot verify.",
+    "concrete_subject": ""
+  },
+  "Melevir__cognitive_complexity-15": {
+    "label": "inconclusive",
+    "reason": "The sentence only claims tests passed and the issue is resolved, which is a task-level outcome that cannot be verified from a patch.",
+    "concrete_subject": ""
+  },
+  "Parquery__icontract-172": {
+    "label": "inconclusive",
+    "reason": "The sentence makes task-level claims about the script running without a TypeError and the issue being resolved, which cannot be verified from a patch, and the patch is empty.",
+    "concrete_subject": ""
+  },
+  "PyCQA__pyflakes-729": {
+    "label": "inconclusive",
+    "reason": "The sentence claims runtime simulator behavior and that the changes 'work as expected', which is a task-outcome/intent claim not decisively verifiable from the patch, and it names no concrete added/re",
+    "concrete_subject": "handleNodeLoad"
+  },
+  "RDFLib__rdflib-1130": {
+    "label": "inconclusive",
+    "reason": "The sentence makes no concrete, checkable claim about a named code component\u2014it only asserts the comment was corrected, a value judgment about task completion.",
+    "concrete_subject": ""
+  },
+  "TACC__agavepy-62": {
+    "label": "supported",
+    "reason": "The patch creates new_config.json containing the converted configuration, matching the concrete claim that it was stored there.",
+    "concrete_subject": "new_config.json"
+  },
+  "TheFriendlyCoder__pyjen-113": {
+    "label": "supported",
+    "reason": "The patch adds `def get_view_plugins(self)` to the PluginManager class, matching the claim exactly.",
+    "concrete_subject": "PluginManager.get_view_plugins"
+  },
+  "absent1706__sqlalchemy-mixins-108": {
+    "label": "inconclusive",
+    "reason": "Task-level claim about the issue being resolved with no concrete code component named and an empty patch.",
+    "concrete_subject": ""
+  },
+  "adamchainz__pip-lock-121": {
+    "label": "inconclusive",
+    "reason": "The sentence is a task-level statement about submitting changes, not a concrete checkable claim about a named code component, and the patch is empty.",
+    "concrete_subject": ""
+  },
+  "ameily__cincoconfig-40": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the test script ran successfully and suggests the changes are correct, which is a task-level outcome not decisively verifiable from the patch.",
+    "concrete_subject": ""
+  },
+  "antirotor__speedcopy-6": {
+    "label": "inconclusive",
+    "reason": "The sentence claims a test script ran successfully and confirmed behavior, which is a task-level/outcome claim that an empty patch cannot verify.",
+    "concrete_subject": ""
+  },
+  "asottile__pyupgrade-135": {
+    "label": "inconclusive",
+    "reason": "This is a task-level outcome claim about resolving the problem, not a concrete checkable claim about a named code component, and the patch is empty.",
+    "concrete_subject": ""
+  },
+  "asottile__pyupgrade-208": {
+    "label": "inconclusive",
+    "reason": "The sentence is a task-level judgment about whether a fix works, not a concrete checkable claim about a named code component.",
+    "concrete_subject": ""
+  },
+  "asottile__pyupgrade-347": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the issue is resolved based on output, a task-level outcome that cannot be verified from the patch and names no concrete code component.",
+    "concrete_subject": ""
+  },
+  "asottile__pyupgrade-890": {
+    "label": "inconclusive",
+    "reason": "The sentence makes a task-level success claim about the script running and the error being resolved, not a concrete checkable claim about a named code component.",
+    "concrete_subject": ""
+  },
+  "asottile__yesqa-27": {
+    "label": "inconclusive",
+    "reason": "The sentence makes a test-outcome/task-level claim and the patch is empty, so no concrete code fact can be verified.",
+    "concrete_subject": ""
+  },
+  "auth0__auth0-python-500": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the test script ran successfully, a task-level outcome that cannot be verified from the patch alone.",
+    "concrete_subject": ""
+  },
+  "bihealth__biomedsheets-23": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the test script ran without exceptions (a task/run outcome), which a patch cannot verify; it names no concrete code fact that the patch could confirm or refute.",
+    "concrete_subject": ""
+  },
+  "canonical__charmcraft-530": {
+    "label": "contradicted",
+    "reason": "The patch replaces build.BuildCommand with CloseCommand in the group rather than adding it, so the command list no longer contains BuildCommand and CloseCommand was substituted in, not added to the li",
+    "concrete_subject": "CloseCommand"
+  },
+  "cekit__cekit-510": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the tagging issue is resolved, which is a task-level outcome that cannot be decisively verified from the patch alone.",
+    "concrete_subject": ""
+  },
+  "dapr__python-sdk-272": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the script ran without errors (a task-level outcome) and the patch is empty, so no concrete code fact about ActorReminderData can be verified.",
+    "concrete_subject": ""
+  },
+  "datosgobar__pydatajson-212": {
+    "label": "inconclusive",
+    "reason": "The sentence claims a test script returned a mock response (a runtime/task outcome), which a patch cannot verify, even though the mock-response branch exists in the code.",
+    "concrete_subject": ""
+  },
+  "eEcoLiDAR__laserchicken-135": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the test script ran successfully and produced a specific runtime value, which is a task-level execution outcome that cannot be verified from the patch alone.",
+    "concrete_subject": ""
+  },
+  "facelessuser__pymdown-extensions-2039": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the issue is fixed and test files cleaned up, which are task-level outcomes not decisively verifiable from the patch alone.",
+    "concrete_subject": ""
+  },
+  "geopandas__geopandas-3240": {
+    "label": "inconclusive",
+    "reason": "The sentence is a task-level outcome claim about the issue being fixed, not a concrete checkable claim about a named code component.",
+    "concrete_subject": ""
+  },
+  "hugovk__pypistats-41": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the error was handled correctly based on absence of output, which is a task-outcome/behavioral judgment, not a concrete named-component claim verifiable from the patch.",
+    "concrete_subject": ""
+  },
+  "iris-hep__func_adl-116": {
+    "label": "inconclusive",
+    "reason": "The sentence makes only a task-level claim about the script running without errors and the issue being resolved, which a patch cannot decisively verify.",
+    "concrete_subject": ""
+  },
+  "iterative__dvc-7205": {
+    "label": "inconclusive",
+    "reason": "The patch does modify push.py to accept multiple experiments via nargs=+, but the sentence makes no concrete named-component claim (no specific function/argument/value), only a vague capability assert",
+    "concrete_subject": "push.py"
+  },
+  "joke2k__django-environ-358": {
+    "label": "inconclusive",
+    "reason": "The sentence's core claim is that a test script completed successfully with no errors, which is a task-level outcome a patch cannot verify.",
+    "concrete_subject": ""
+  },
+  "just-work__fffw-100": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the issue was detected and the fix worked, which is a task-outcome claim, not a concrete checkable component claim.",
+    "concrete_subject": ""
+  },
+  "m3dev__gokart-147": {
+    "label": "inconclusive",
+    "reason": "The sentence claims a test ran successfully and did not break functionality, which is a task-level/test-outcome claim not verifiable from an empty patch.",
+    "concrete_subject": ""
+  },
+  "networkx__networkx-7024": {
+    "label": "inconclusive",
+    "reason": "The sentence describes a runtime output value, not a concrete named code component added/removed/renamed/set in the patch.",
+    "concrete_subject": ""
+  },
+  "pact-foundation__pact-python-94": {
+    "label": "inconclusive",
+    "reason": "The sentence makes a task-level completion claim ('fixed the issue and validated the changes') with no named code component, which cannot be verified from the patch alone.",
+    "concrete_subject": ""
+  },
+  "peterbe__premailer-218": {
+    "label": "inconclusive",
+    "reason": "The sentence only claims the test script ran without errors and the issue is resolved, which is a task-level outcome that cannot be verified from the patch.",
+    "concrete_subject": ""
+  },
+  "planetlabs__planet-client-python-621": {
+    "label": "inconclusive",
+    "reason": "The sentence claims tests pass and functionality is verified, which is a task-level outcome a patch cannot prove.",
+    "concrete_subject": ""
+  },
+  "ppizarror__pygame-menu-357": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the script ran without errors and the issue is resolved, which is a task-level outcome that cannot be verified from the patch alone.",
+    "concrete_subject": ""
+  },
+  "pvlib__pvlib-python-1296": {
+    "label": "inconclusive",
+    "reason": "The sentence claims a runtime output value with an empty patch and no concrete code component named or changed to verify against.",
+    "concrete_subject": ""
+  },
+  "pydantic__pydantic-2143": {
+    "label": "inconclusive",
+    "reason": "The sentence makes a task-level claim that the issue is resolved based on the script running without errors, which is not a concrete checkable code fact and the patch is empty.",
+    "concrete_subject": ""
+  },
+  "pydicom__pydicom-1555": {
+    "label": "inconclusive",
+    "reason": "The sentence is a task-level claim about the script running and the issue being resolved, which cannot be verified from the patch and names no concrete code component.",
+    "concrete_subject": ""
+  },
+  "python-metar__python-metar-152": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the issue is resolved, a task-level outcome that cannot be verified from a patch, and the patch is empty.",
+    "concrete_subject": ""
+  },
+  "python-visualization__folium-1633": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the script ran without errors and the issue is resolved, which is a task-level outcome that cannot be verified from a patch.",
+    "concrete_subject": ""
+  },
+  "pyvista__pyvista-432": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the arguments are 'working as expected', a task-level behavioral outcome that cannot be decisively verified from the patch alone.",
+    "concrete_subject": ""
+  },
+  "scikit-hep__hist-129": {
+    "label": "inconclusive",
+    "reason": "The sentence makes a task-level claim about the script running and the issue being resolved, not a concrete checkable claim about a named code component, and the patch is empty.",
+    "concrete_subject": ""
+  },
+  "scrapy__itemadapter-18": {
+    "label": "supported",
+    "reason": "The patch changes field_names to return a MappingProxyType (a read-only view) instead of a list, matching the concrete claim that it now returns a view of the keys.",
+    "concrete_subject": ".field_names method"
+  },
+  "tehmaze__ansi-34": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the test script ran successfully and produced expected output, which is a task-level outcome that cannot be verified from the patch alone.",
+    "concrete_subject": ""
+  },
+  "tobymao__sqlglot-2591": {
+    "label": "inconclusive",
+    "reason": "The sentence claims the issue is fixed based on the script running without errors, which is a task-level outcome that cannot be verified from the patch alone.",
+    "concrete_subject": ""
+  }
+}

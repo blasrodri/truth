@@ -105,6 +105,36 @@ pub struct EvalReport {
     pub cases: Vec<CaseResult>,
 }
 
+impl EvalReport {
+    /// The adoption-blocking metric: cases whose expected verdict is NOT
+    /// `contradicted` but truth returned `contradicted` anyway. A verifier that
+    /// false-accuses a truthful agent gets uninstalled the first day, so this
+    /// must be 0. (A missed catch — expected contradicted, got something softer —
+    /// is recall loss, reported separately and non-blocking.)
+    pub fn false_contradictions(&self) -> Vec<&CaseResult> {
+        self.cases
+            .iter()
+            .filter(|c| c.expected_status != "contradicted" && c.actual_status == "contradicted")
+            .collect()
+    }
+
+    /// Recall on the cases that SHOULD contradict — did truth catch the lies it
+    /// was supposed to? Reported, never gated: trust is earned by never crying
+    /// wolf first, then improving catch rate.
+    pub fn recall(&self) -> Option<f32> {
+        let expected: Vec<_> = self
+            .cases
+            .iter()
+            .filter(|c| c.expected_status == "contradicted")
+            .collect();
+        if expected.is_empty() {
+            return None;
+        }
+        let caught = expected.iter().filter(|c| c.passed).count();
+        Some(caught as f32 / expected.len() as f32)
+    }
+}
+
 /// Run all cases in a fixture. Each case is fully isolated (own in-memory DB).
 pub fn run_eval(config: &Config, fixture: &Fixture) -> Result<EvalReport> {
     let mut cases = Vec::new();
@@ -202,7 +232,13 @@ fn concise_summary(response: &str) -> String {
 ///
 /// With `record`, captures actual outputs to a YAML file instead of asserting
 /// (it never exits non-zero). `force` allows overwriting an existing file.
-pub fn eval(fixture_path: &str, json: bool, record: Option<&str>, force: bool) -> Result<()> {
+pub fn eval(
+    fixture_path: &str,
+    json: bool,
+    record: Option<&str>,
+    force: bool,
+    precision: bool,
+) -> Result<()> {
     let config = load_config()?;
     let text = std::fs::read_to_string(fixture_path)
         .with_context(|| format!("reading fixture {fixture_path}"))?;
@@ -217,6 +253,45 @@ pub fn eval(fixture_path: &str, json: bool, record: Option<&str>, force: bool) -
     }
 
     let report = run_eval(&config, &fixture)?;
+
+    // Precision mode: report the adoption gate (false-contradictions == 0) and
+    // recall, and exit non-zero ONLY on a false contradiction — a recall miss is
+    // advisory. This is the metric CI gates the build on.
+    if precision {
+        let fc = report.false_contradictions();
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "fixture": fixture_path,
+                    "cases": report.cases.len(),
+                    "false_contradictions": fc.len(),
+                    "recall": report.recall(),
+                    "offenders": fc.iter().map(|c| serde_json::json!({
+                        "name": c.name, "expected": c.expected_status, "got": c.actual_status,
+                    })).collect::<Vec<_>>(),
+                }))?
+            );
+        } else {
+            println!("{fixture_path} — precision gate\n");
+            println!("  cases                {}", report.cases.len());
+            println!("  false contradictions {} (must be 0)", fc.len());
+            match report.recall() {
+                Some(r) => println!("  recall               {:.0}% (advisory)", r * 100.0),
+                None => println!("  recall               n/a (no contradicted cases)"),
+            }
+            for c in &fc {
+                println!(
+                    "\n  ✗ FALSE CONTRADICTION  {} — expected {}, truth said contradicted",
+                    c.name, c.expected_status
+                );
+            }
+        }
+        if !fc.is_empty() {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);

@@ -1,0 +1,222 @@
+# Precision corpus — bucket N (narrative / task-level / meta prose).
+#
+# CONTRACT: every case here MUST verify to `inconclusive`. A flip to
+# `contradicted` is a FALSE CONTRADICTION — the adoption-blocking error the
+# CI precision gate fails the build on (must be 0). These are real agent
+# over-claims (SWE-bench, n=42) plus the known-FP English that false-
+# contradicted truth on its own repo this week. None is a checkable code
+# fact, so a correct verifier refuses them all.
+#
+# Provenance: benchmarks/swe_overclaim/labeled.json (label==inconclusive),
+# auto-labeled by an LLM against each agent's actual git patch, abstaining to
+# inconclusive whenever the patch could not decide. Regenerate via
+# benchmarks/swe_overclaim/emit_corpus.py.
+cases:
+  - name: N_J-CPelletier_webcomix-7
+    question: "The test script ran successfully and confirmed that the `custom` command works correctly with the `-y` option."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_Melevir_cognitive_complexity-15
+    question: "All tests have passed successfully, which indicates that the issue has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_Parquery_icontract-172
+    question: "The script now runs without producing a `TypeError`, and the output `RightHalfPlanePoint(first=1, second=0)` indicates that the issue has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_PyCQA_pyflakes-729
+    question: "The simulator has reported the undefined name errors for `x` and `int`, which is the expected behavior. This confirms that the changes to the `handleNodeLoad` method are working as expected."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_RDFLib_rdflib-1130
+    question: "The comment has been successfully corrected."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_absent1706_sqlalchemy-mixins-108
+    question: "The script completed successfully, and the issue appears to be resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_adamchainz_pip-lock-121
+    question: "Now that we have fixed the issue, we should submit our changes to the code base."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_ameily_cincoconfig-40
+    question: "The test script completed successfully with no errors, which suggests that the changes have been correctly implemented."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_antirotor_speedcopy-6
+    question: "The test script ran successfully and confirmed that the `copyfile` function works correctly with non-absolute filenames."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_asottile_pyupgrade-135
+    question: "This suggests that the fix has resolved the problem."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_asottile_pyupgrade-208
+    question: "This suggests that the fix is working as intended."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_asottile_pyupgrade-347
+    question: "The output has changed to the expected result. This suggests that the issue has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_asottile_pyupgrade-890
+    question: "The output `€ ` indicates that the script ran successfully and the error has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_asottile_yesqa-27
+    question: "The test script ran successfully and the assertion passed, which indicates that the `# noqa` check is now correctly skipped for typing annotations."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_auth0_auth0-python-500
+    question: "The test script ran successfully without producing any output, which indicates that the test cases are now executing correctly."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_bihealth_biomedsheets-23
+    question: "The test script ran successfully and did not raise any exceptions, indicating that the changes to the `check_tsv_line` method are working as expected."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_cekit_cekit-510
+    question: "This suggests that the update to the `docker_builder.py` file has resolved the tagging issue."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_dapr_python-sdk-272
+    question: "The test script ran successfully and produced no errors, indicating that the `due_time` and `period` values are now correctly used by the `ActorReminderData` class."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_datosgobar_pydatajson-212
+    question: "The test script returned the mock response, indicating that the function's internal logic correctly handled the organization ID without attempting to connect to an external URL."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_eEcoLiDAR_laserchicken-135
+    question: "The test script ran successfully and produced a density absolute mean value of 33.33333333333333, which indicates that the function now correctly excludes ground points."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_facelessuser_pymdown-extensions-2039
+    question: "Now that we have fixed the issue and cleaned up the test files, we can submit our changes to the code base."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_geopandas_geopandas-3240
+    question: "This suggests that the issue has been fixed."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_hugovk_pypistats-41
+    question: "The command did not produce any output, which means that the error was handled correctly."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_iris-hep_func_adl-116
+    question: "The script ran successfully and did not produce any errors, which means the issue has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_iterative_dvc-7205
+    question: "The `push.py` file has been updated to support multiple experiment names."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_joke2k_django-environ-358
+    question: "The test script has completed successfully with no errors, indicating that the `_cast_urlstr` function now correctly handles the password with plus signs."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_just-work_fffw-100
+    question: "This suggests that the issue with the Trim filter was detected and our fix worked."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_m3dev_gokart-147
+    question: "The test ran successfully without any output, which indicates that our changes did not break any existing functionality."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_networkx_networkx-7024
+    question: "The output is now `False`, which is the expected behavior."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_pact-foundation_pact-python-94
+    question: "Now that we have fixed the issue and validated the changes, we can submit our changes to the code base."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_peterbe_premailer-218
+    question: "The test script ran successfully and didn't produce any errors, which indicates that the issue has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_planetlabs_planet-client-python-621
+    question: "All tests have passed successfully, and the `sort` option functionality has been verified."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_ppizarror_pygame-menu-357
+    question: "The script has completed successfully without any errors, indicating that the issue has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_pvlib_pvlib-python-1296
+    question: "The output is now `345`, which is the expected output."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_pydantic_pydantic-2143
+    question: "Since the script ran successfully without any errors, it suggests that the issue has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_pydicom_pydicom-1555
+    question: "The script ran successfully without any errors, which indicates that the issue has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_python-metar_python-metar-152
+    question: "The regex has successfully matched the temperature group string, indicating that the issue has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_python-visualization_folium-1633
+    question: "The script ran successfully without any errors, which indicates that the issue has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_pyvista_pyvista-432
+    question: "This indicates that both `scalars` and `scalar` arguments are now working as expected."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_scikit-hep_hist-129
+    question: "The test script ran successfully and did not produce any errors, indicating that the issue has been resolved."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_tehmaze_ansi-34
+    question: "The test script executed successfully and produced the expected output for both foreground and background colors. This confirms that our changes are working correctly."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_tobymao_sqlglot-2591
+    question: "Since the script ran successfully without any errors, it suggests that the issue has been fixed."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_fp_workspace_with
+    question: "a Rust workspace with crates/"
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_fp_workspace_emdash
+    question: "this is the truth project (a Rust workspace — crates/)"
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_fp_backtick_repo
+    question: "Confirmed: this is the `truth` project (a Rust workspace — `crates/`)"
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_fp_import_cue
+    question: "added import as a dependency cue in extract.rs"
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_meta_loop_closed
+    question: "The loop closed concretely: this dataset drove a real engine fix."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_meta_false_positive
+    question: "this was a false positive in the calibration"
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_judgment_cleaner
+    question: "the error handling is much cleaner and more robust now"
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_judgment_faster
+    question: "this should be noticeably faster under load"
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_task_done
+    question: "Done — the issue should be resolved now."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive
+  - name: N_task_tests_pass
+    question: "All tests have passed, so the bug is fixed."
+    repo: __EMPTY_REPO__
+    expected_status: inconclusive

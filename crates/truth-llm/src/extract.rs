@@ -567,8 +567,46 @@ impl ClaimExtractor for RegexExtractor {
                 || lower.contains("exist")
                 || lower.contains("defined")
                 || lower.contains('`');
+            // Test-OUTCOME narrative that merely MENTIONS a backticked symbol is
+            // not a symbol-existence claim: "the test script ran successfully …
+            // `copyfile` works", "no errors, indicating the `due_time` values are
+            // now correctly used". The backtick is the only `has_symbol_signal`
+            // here, and it's about a runtime result, not the symbol's existence.
+            // Judging these as `symbol_exists` and contradicting them (the symbol
+            // isn't in the empty/other tree) was the dominant false-contradiction
+            // class on the SWE-bench over-claim corpus (5/52, 2026-06-23). A real
+            // symbol claim pairs the name with an EXISTENCE/CHANGE verb, so when
+            // the only signal is a backtick inside test-outcome prose, refuse.
+            // Word-boundary checks: "undefined name errors" must NOT count as the
+            // existence verb "defined" (substring `contains` once let "undefined"
+            // re-enable a symbol claim on test-outcome prose — truth FPing on the
+            // exact substring-vs-word bug it exists to catch).
+            let only_backtick_signal = lower.contains('`')
+                && !(has_word(&lower, "added")
+                    || has_word(&lower, "removed")
+                    || has_word(&lower, "deleted")
+                    || has_word(&lower, "renamed")
+                    || has_word(&lower, "created")
+                    || has_word(&lower, "dropped")
+                    || has_word(&lower, "exist")
+                    || has_word(&lower, "exists")
+                    || has_word(&lower, "defined"));
+            let test_outcome_prose = (lower.contains("test")
+                || lower.contains("script")
+                || lower.contains("ran ")
+                || lower.contains("run ")
+                || lower.contains("passed")
+                || lower.contains("successfully")
+                || lower.contains("no errors")
+                || lower.contains("without errors")
+                || lower.contains("works")
+                || lower.contains("working")
+                || lower.contains("indicating")
+                || lower.contains("confirms")
+                || lower.contains("confirmed"))
+                && only_backtick_signal;
             {
-                if let Some(name) = name.filter(|_| has_symbol_signal) {
+                if let Some(name) = name.filter(|_| has_symbol_signal && !test_outcome_prose) {
                     let removed = lower.contains("removed")
                         || lower.contains("deleted")
                         || lower.contains("dropped")
@@ -1435,6 +1473,35 @@ mod tests {
         let c = RegexExtractor
             .extract("The 30% headline does not depend on it, it needs only the eval ground truth");
         assert_ne!(c.claim_type, ClaimType::DependencyUsed, "{:?}", c.subject);
+    }
+
+    #[test]
+    fn test_outcome_prose_mentioning_a_symbol_is_not_a_symbol_claim() {
+        // The dominant false-contradiction class on the SWE-bench over-claim
+        // corpus (fixtures/precision): a test-RESULT narrative that merely names
+        // a backticked symbol ("the test ran successfully and `copyfile` works")
+        // was judged a `symbol_exists` claim and contradicted when the symbol
+        // wasn't in the tree. A real symbol claim pairs the name with an
+        // existence/change verb; mention inside test-outcome prose must refuse.
+        for text in [
+            "The test script ran successfully and confirmed that the `copyfile` function works correctly",
+            "The test script ran successfully and did not raise any exceptions, indicating that the changes to the `check_tsv_line` method are working as expected",
+            "no errors, indicating that the `due_time` and `period` values are now correctly used by the `ActorReminderData` class",
+            // Word-boundary guard: "undefined" must NOT count as the verb "defined".
+            "The simulator reported the undefined name errors for `x`, confirming the `handleNodeLoad` method works",
+        ] {
+            let c = RegexExtractor.extract(text);
+            assert_ne!(
+                c.claim_type,
+                ClaimType::SymbolExists,
+                "test-outcome prose judged as a symbol claim (subj {:?}): {text}",
+                c.subject,
+            );
+        }
+        // Control: a real existence/change verb keeps the symbol claim checkable.
+        let added = RegexExtractor.extract("I added the `copyfile` function to shutil");
+        assert_eq!(added.claim_type, ClaimType::SymbolExists);
+        assert_eq!(added.subject.as_deref(), Some("copyfile"));
     }
 
     #[test]

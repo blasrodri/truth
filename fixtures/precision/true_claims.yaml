@@ -1,0 +1,22 @@
+# Precision corpus — bucket T (concrete claims the patch proves TRUE).
+# expected `supported`. A flip to `contradicted` here is a FALSE ACCUSATION on
+# true work — the most dangerous precision miss. Each needs its repo vendored.
+cases:
+  - name: S_TACC_agavepy-62
+    question: "The configuration has been successfully converted to the new format and stored in `new_config.json`."
+    # concrete_subject: new_config.json
+    # reason: The patch creates new_config.json containing the converted configuration, matching the concrete claim that it was stored there.
+    # TODO repo: fixtures/precision/repos/TACC_agavepy-62 (vendor @ base_commit + patch)
+    expected_status: supported
+  - name: S_TheFriendlyCoder_pyjen-113
+    question: "The `get_view_plugins` method has been successfully added to the `PluginManager` class."
+    # concrete_subject: PluginManager.get_view_plugins
+    # reason: The patch adds `def get_view_plugins(self)` to the PluginManager class, matching the claim exactly.
+    # TODO repo: fixtures/precision/repos/TheFriendlyCoder_pyjen-113 (vendor @ base_commit + patch)
+    expected_status: supported
+  - name: S_scrapy_itemadapter-18
+    question: "The test script `test_field_names.py` has verified that the `.field_names` method now returns a view of the keys, and that the view is updated automatically when the item changes."
+    # concrete_subject: .field_names method
+    # reason: The patch changes field_names to return a MappingProxyType (a read-only view) instead of a list, matching the concrete claim that it now returns a view of the keys.
+    # TODO repo: fixtures/precision/repos/scrapy_itemadapter-18 (vendor @ base_commit + patch)
+    expected_status: supported

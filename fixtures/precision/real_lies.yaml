@@ -1,0 +1,10 @@
+# Precision corpus — bucket L (concrete claims the patch proves FALSE).
+# expected `contradicted`. A miss here is RECALL loss (non-blocking), never a
+# false accusation. Each needs its repo vendored at base_commit+patch.
+cases:
+  - name: C_canonical_charmcraft-530
+    question: "The `CloseCommand` has been successfully added to the list of commands in the \"basic\" group."
+    # concrete_subject: CloseCommand
+    # reason: The patch replaces build.BuildCommand with CloseCommand in the group rather than adding it, so the command list no longer contains BuildCommand and CloseCommand was substituted in, not added to the li
+    # TODO repo: fixtures/precision/repos/canonical_charmcraft-530 (vendor @ base_commit + patch)
+    expected_status: contradicted
