@@ -16,6 +16,26 @@ pub struct VerdictDecision {
     pub evidence_ids: Vec<String>,
     pub caveats: Vec<String>,
     pub suggested_action: Option<String>,
+    /// Whether a CONTRADICTED verdict rests on a structured binary fact — a file
+    /// present/absent in the working-tree diff, an AST/index symbol or route, an
+    /// exact value comparison, or a command exit code. Phase 3 trusts only
+    /// structured contradictions to stand for a claim truth parsed out of prose;
+    /// count-based or unproven contradictions are downgraded. Meaningless for
+    /// non-Contradicted statuses (left true by default); count paths set false.
+    pub structured: bool,
+}
+
+impl Default for VerdictDecision {
+    fn default() -> Self {
+        Self {
+            status: VerdictStatus::Inconclusive,
+            confidence: 0.0,
+            evidence_ids: Vec::new(),
+            caveats: Vec::new(),
+            suggested_action: None,
+            structured: true,
+        }
+    }
 }
 
 /// Bundle of everything the engine reasons over for one check.
@@ -231,6 +251,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                         "`{subject}` is declared as a dependency in the manifest."
                     )],
                     suggested_action: None,
+                    structured: true,
                 },
                 (true, true) => VerdictDecision {
                     status: VerdictStatus::Contradicted,
@@ -238,6 +259,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                     evidence_ids: vec!["repo:dependency_exists".into()],
                     caveats: vec![format!("`{subject}` is still declared as a dependency.")],
                     suggested_action: Some("It is still a dependency; re-check the change.".into()),
+                    structured: true,
                 },
                 (false, true) => VerdictDecision {
                     status: VerdictStatus::Supported,
@@ -245,6 +267,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                     evidence_ids: vec![],
                     caveats: vec![format!("`{subject}` is not declared as a dependency.")],
                     suggested_action: None,
+                    structured: true,
                 },
                 (false, false) => {
                     // Absence only contradicts when the index actually HAS
@@ -261,6 +284,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                                 "`{subject}` is not declared as a dependency in any parsed manifest."
                             )],
                             suggested_action: None,
+                            structured: true,
                         }
                     } else {
                         VerdictDecision {
@@ -273,6 +297,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                             suggested_action: Some(
                                 "Re-index to check dependency claims.".into(),
                             ),
+                            structured: true,
                         }
                     }
                 }
@@ -313,13 +338,18 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
         let referenced =
             format!("`{subject}` is referenced {code_refs} time(s) in the indexed code.");
         if expects_zero {
-            return VerdictDecision {
-                status: VerdictStatus::Contradicted,
-                confidence: 0.9,
+            // COUNT-BASED (substring/identifier reference scan) → inform, never
+            // contradict. The scan over-counts comments/strings, so a non-zero
+            // count is a strong hint the subject is used, not proof the agent
+            // lied about it being unused.
+            return count_inconclusive(
                 evidence_ids,
-                caveats: vec![referenced],
-                suggested_action: Some("It is used in code; treat it as in use.".to_string()),
-            };
+                vec![
+                    referenced,
+                    "Reference counts come from a text scan (may include comments/strings), so this flags likely use rather than proving it.".to_string(),
+                ],
+                Some("Looks used in code — verify before removing.".to_string()),
+            );
         }
         return VerdictDecision {
             status: VerdictStatus::Supported,
@@ -327,20 +357,24 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
             evidence_ids,
             caveats: vec![referenced],
             suggested_action: None,
+            structured: true,
         };
     }
     // Positive "X is used" claim with a definitive zero-reference code signal:
     // contradicted (it is not used in code).
     if !expects_zero && has_code_refs && code_refs == 0 && !has_logs {
-        return VerdictDecision {
-            status: VerdictStatus::Contradicted,
-            confidence: 0.75,
+        // COUNT-BASED (zero from a text scan) → inform, never contradict. A
+        // dynamically-built or reflected reference is invisible to the scan, so
+        // "0 references" is a strong dead-code hint, not proof the agent's "X is
+        // used" claim is a lie.
+        return count_inconclusive(
             evidence_ids,
-            caveats: vec![format!(
-                "`{subject}` is not referenced in the indexed code."
-            )],
-            suggested_action: None,
-        };
+            vec![
+                format!("`{subject}` is not referenced in the indexed code (text scan)."),
+                "A zero text-scan count can miss dynamic/reflected uses, so this flags possible dead code rather than disproving use.".to_string(),
+            ],
+            Some("Looks unreferenced — confirm there's no dynamic use.".to_string()),
+        );
     }
 
     if !has_logs && !route_exists && !has_code_refs {
@@ -361,20 +395,25 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                     .to_string(),
             ],
             suggested_action: None,
+            structured: true,
         };
     }
 
     if expects_zero {
         if observed > input.usage_threshold {
-            return VerdictDecision {
-                status: VerdictStatus::Contradicted,
-                confidence: 0.94,
+            // COUNT-BASED (log occurrence count over a window) → inform, never
+            // contradict. Observed traffic is a strong "still in use" signal, but
+            // a log window can over- or under-count, so flag rather than accuse
+            // the agent of lying about it being unused.
+            let mut caveats = usage_caveats(input);
+            caveats.push(
+                "Based on a log occurrence count over a window — a strong usage signal, not a structured fact.".to_string(),
+            );
+            return count_inconclusive(
                 evidence_ids,
-                caveats: usage_caveats(input),
-                suggested_action: Some(
-                    "Treat the subject as still in use before removing it.".to_string(),
-                ),
-            };
+                caveats,
+                Some("Traffic observed — treat as still in use before removing.".to_string()),
+            );
         }
         if observed == 0 && has_logs {
             if !route_exists {
@@ -397,6 +436,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                 evidence_ids,
                 caveats,
                 suggested_action: None,
+                structured: true,
             };
         }
     }
@@ -419,13 +459,19 @@ fn decide_error(input: &VerdictInput) -> VerdictDecision {
         );
     }
     if observed > input.usage_threshold {
-        VerdictDecision {
-            status: VerdictStatus::Contradicted,
-            confidence: 0.9,
+        // COUNT-BASED (error log count over a window) → inform, never contradict.
+        // The errors observed may predate the fix, or stem from another cause; a
+        // log count can't prove the agent's "it's fixed" claim is false. Surface
+        // the occurrences at Inconclusive so the user investigates.
+        let mut caveats = usage_caveats(input);
+        caveats.push(
+            "Observed errors may predate the fix or stem from another cause — a log count is not a structured fact.".to_string(),
+        );
+        count_inconclusive(
             evidence_ids,
-            caveats: usage_caveats(input),
-            suggested_action: Some("The error still occurs; reopen or investigate.".to_string()),
-        }
+            caveats,
+            Some("Errors still appear in logs; investigate before closing.".to_string()),
+        )
     } else {
         let mut caveats = usage_caveats(input);
         caveats.push("Absence in the window is not a permanent guarantee.".to_string());
@@ -435,6 +481,7 @@ fn decide_error(input: &VerdictInput) -> VerdictDecision {
             evidence_ids,
             caveats,
             suggested_action: None,
+            structured: true,
         }
     }
 }
@@ -453,6 +500,7 @@ fn decide_latest(input: &VerdictInput) -> VerdictDecision {
             evidence_ids,
             caveats: usage_caveats(input),
             suggested_action: None,
+            structured: true,
         },
         None => inconclusive("No occurrence found in the configured window.", None),
     }
@@ -485,6 +533,7 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
             evidence_ids: repo_evidence_labels(input),
             caveats: vec!["Based on static repo contents at index time.".to_string()],
             suggested_action: None,
+            structured: true,
         },
         // "I removed it" but it is still there → Contradicted (caught the lie).
         (true, true) => VerdictDecision {
@@ -495,6 +544,7 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
             suggested_action: Some(
                 "Claimed removed/absent, but it is still defined. Re-check the change.".to_string(),
             ),
+            structured: true,
         },
         // "I removed it" and it is gone → Supported.
         (false, true) => VerdictDecision {
@@ -503,6 +553,7 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
             evidence_ids: repo_evidence_labels(input),
             caveats: vec!["Absent from the indexed repo at index time.".to_string()],
             suggested_action: None,
+            structured: true,
         },
         // Claimed present but not found. If the DIFF positively shows it was
         // removed this turn, that's a contradiction of "still registered" — we
@@ -520,6 +571,7 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
                         "Claimed still present, but the diff removed it. Re-check the change."
                             .to_string(),
                     ),
+                    structured: true,
                 }
             } else {
                 inconclusive(
@@ -587,6 +639,7 @@ fn decide_symbol(input: &VerdictInput) -> VerdictDecision {
             evidence_ids: vec![format!("code:{subject}")],
             caveats: vec![format!("`{subject}` is still present in the code.")],
             suggested_action: Some("Claimed removed, but it is still defined.".to_string()),
+            structured: true,
         },
         // "I removed X" and it is gone → Supported.
         (false, true) => supported_symbol(subject, "is absent from the code"),
@@ -599,6 +652,7 @@ fn decide_symbol(input: &VerdictInput) -> VerdictDecision {
                 "`{subject}` is not present in the working tree or index."
             )],
             suggested_action: Some("Claimed present, but it could not be found.".to_string()),
+            structured: true,
         },
     }
 }
@@ -610,6 +664,7 @@ fn supported_symbol(subject: &str, why: &str) -> VerdictDecision {
         evidence_ids: vec![format!("code:{subject}")],
         caveats: vec![format!("`{subject}` {why}.")],
         suggested_action: None,
+        structured: true,
     }
 }
 
@@ -653,6 +708,7 @@ fn decide_value(input: &VerdictInput) -> VerdictDecision {
                     evidence_ids: vec![label],
                     caveats: vec!["Compared against the indexed source definition.".to_string()],
                     suggested_action: None,
+                    structured: true,
                 }
             } else {
                 VerdictDecision {
@@ -661,6 +717,7 @@ fn decide_value(input: &VerdictInput) -> VerdictDecision {
                     evidence_ids: vec![label],
                     caveats: vec![format!("Claim says {exp} but the source defines {def}.")],
                     suggested_action: Some("Update the claim or the source to match.".to_string()),
+                    structured: true,
                 }
             }
         }
@@ -677,6 +734,7 @@ fn decide_value(input: &VerdictInput) -> VerdictDecision {
             suggested_action: Some(
                 "Restate with the specific value, e.g. \"retry count is 3\".".to_string(),
             ),
+            structured: true,
         },
         _ => inconclusive(
             "I could not find a source definition for this value in the indexed repo.",
@@ -731,6 +789,7 @@ fn decide_file_changed(input: &VerdictInput) -> VerdictDecision {
                     evidence_ids: vec![format!("diff:{file}={actual}")],
                     caveats: vec!["Based on the working-tree git diff vs HEAD.".to_string()],
                     suggested_action: None,
+                    structured: true,
                 }
             } else {
                 VerdictDecision {
@@ -741,6 +800,7 @@ fn decide_file_changed(input: &VerdictInput) -> VerdictDecision {
                         "Claimed {expected}, but the diff shows `{file}` was {actual}."
                     )],
                     suggested_action: Some("Re-check what actually changed.".to_string()),
+                    structured: true,
                 }
             }
         }
@@ -756,6 +816,7 @@ fn decide_file_changed(input: &VerdictInput) -> VerdictDecision {
             suggested_action: Some(
                 "Claimed a change to this file, but the diff doesn't include it.".to_string(),
             ),
+            structured: true,
         },
         None => inconclusive(
             "The working tree has no changes vs HEAD, so I can't verify what this turn changed (already committed?).",
@@ -810,6 +871,7 @@ fn decide_only_changed(input: &VerdictInput) -> VerdictDecision {
                 files.len()
             )],
             suggested_action: Some("Re-check what actually changed.".to_string()),
+            structured: true,
         };
     }
     if offenders.is_empty() {
@@ -822,6 +884,7 @@ fn decide_only_changed(input: &VerdictInput) -> VerdictDecision {
                 files.len()
             )],
             suggested_action: None,
+            structured: true,
         };
     }
     let shown: Vec<&str> = offenders.iter().take(3).map(|s| s.as_str()).collect();
@@ -838,6 +901,7 @@ fn decide_only_changed(input: &VerdictInput) -> VerdictDecision {
         suggested_action: Some(
             "Other files were changed too; mention them or revert them.".to_string(),
         ),
+        structured: true,
     }
 }
 
@@ -853,6 +917,7 @@ fn decide_change_count(input: &VerdictInput) -> VerdictDecision {
             evidence_ids: vec![],
             caveats: vec!["The claim did not state a count to compare against.".to_string()],
             suggested_action: None,
+            structured: true,
         };
     };
     let item = input
@@ -872,15 +937,17 @@ fn decide_change_count(input: &VerdictInput) -> VerdictDecision {
         .unwrap_or(0.0);
 
     if hits == 0.0 {
-        return VerdictDecision {
-            status: VerdictStatus::Contradicted,
-            confidence: 0.85,
-            evidence_ids: vec![format!("diff:hits={hits}")],
-            caveats: vec![format!(
-                "The diff has no changed lines mentioning `{subject}`."
+        // COUNT-BASED (changed-LINE count as a proxy for changed SITES) → inform,
+        // never contradict. The subject may have been changed via a rename, a
+        // helper, or a line that doesn't literally mention it, so zero textual
+        // hits is a hint the claim is off, not proof it's a lie.
+        return count_inconclusive(
+            vec![format!("diff:hits={hits}")],
+            vec![format!(
+                "The diff has no changed lines literally mentioning `{subject}` — but changed-line count only approximates changed sites."
             )],
-            suggested_action: Some("Re-check what actually changed.".to_string()),
-        };
+            Some("Re-check what actually changed.".to_string()),
+        );
     }
     if (hits - expected).abs() < f64::EPSILON {
         return VerdictDecision {
@@ -892,6 +959,7 @@ fn decide_change_count(input: &VerdictInput) -> VerdictDecision {
                     .to_string(),
             ],
             suggested_action: None,
+            structured: true,
         };
     }
     VerdictDecision {
@@ -902,6 +970,7 @@ fn decide_change_count(input: &VerdictInput) -> VerdictDecision {
             "Claimed {expected}, but the diff shows {hits} changed line(s) mentioning `{subject}` (line-based count)."
         )],
         suggested_action: Some("Verify the exact number of sites changed.".to_string()),
+        structured: true,
     }
 }
 
@@ -950,6 +1019,7 @@ fn decide_renamed(input: &VerdictInput) -> VerdictDecision {
             suggested_action: Some(
                 "Claimed renamed, but the old name survives. Re-check the change.".to_string(),
             ),
+            structured: true,
         },
         (Some(false), Some(true)) => VerdictDecision {
             status: VerdictStatus::Supported,
@@ -957,6 +1027,7 @@ fn decide_renamed(input: &VerdictInput) -> VerdictDecision {
             evidence_ids: vec![format!("diff:{old}->{new}")],
             caveats: vec![format!("The diff removes `{old}` and adds `{new}`.")],
             suggested_action: None,
+            structured: true,
         },
         (Some(false), _) => VerdictDecision {
             status: VerdictStatus::Contradicted,
@@ -966,6 +1037,7 @@ fn decide_renamed(input: &VerdictInput) -> VerdictDecision {
                 "`{old}` was removed, but `{new}` was not added by this diff."
             )],
             suggested_action: Some("The new name is missing from the change.".to_string()),
+            structured: true,
         },
         // Diff is silent. The index can still catch "renamed" when the old
         // name is in fact still defined.
@@ -978,6 +1050,7 @@ fn decide_renamed(input: &VerdictInput) -> VerdictDecision {
                 suggested_action: Some(
                     "Claimed renamed, but the old name is still defined.".to_string(),
                 ),
+                structured: true,
             },
             _ => inconclusive(
                 "I couldn't find the rename in the working-tree diff or the index.",
@@ -1034,6 +1107,7 @@ fn decide_command(input: &VerdictInput) -> VerdictDecision {
             suggested_action: Some(
                 "Fix the failure or re-run before claiming success.".to_string(),
             ),
+            structured: true,
         };
     }
     if !fresh {
@@ -1077,6 +1151,7 @@ fn decide_command(input: &VerdictInput) -> VerdictDecision {
         evidence_ids: vec![format!("run:{command}")],
         caveats,
         suggested_action,
+        structured: true,
     }
 }
 
@@ -1164,6 +1239,35 @@ fn inconclusive(msg: &str, action: Option<String>) -> VerdictDecision {
         evidence_ids: vec![],
         caveats: vec![msg.to_string()],
         suggested_action: action,
+        structured: false,
+    }
+}
+
+/// Phase-2 demotion: a count-based signal (reference count, log occurrence
+/// count, changed-line count) may INFORM but never CONTRADICT. Only a structured
+/// binary fact — a file present/absent in the diff, an AST symbol defined or
+/// not, an exact value mismatch, a command exit code — earns a Contradicted.
+///
+/// Counts are FP-prone: a substring reference scan over-counts comments/strings,
+/// a log window can miss or sample, a changed-LINE count approximates changed
+/// SITES. Contradicting a truthful agent on a noisy count is the adoption-killing
+/// false accusation the precision gate exists to drive to zero. So these paths
+/// surface their evidence at Inconclusive (a flagged suspicion the user can act
+/// on), not Contradicted. `structured` is false so phase 3 never lets one of
+/// these stand as a contradiction for a prose-parsed claim either.
+fn count_inconclusive(
+    evidence_ids: Vec<String>,
+    caveats: Vec<String>,
+    action: Option<String>,
+) -> VerdictDecision {
+    VerdictDecision {
+        status: VerdictStatus::Inconclusive,
+        // Higher than a bare refusal: we DID gather a real (if soft) signal.
+        confidence: 0.5,
+        evidence_ids,
+        caveats,
+        suggested_action: action,
+        structured: false,
     }
 }
 
@@ -1226,7 +1330,12 @@ mod tests {
     }
 
     #[test]
-    fn usage_zero_but_traffic_present_is_contradicted() {
+    fn usage_zero_but_traffic_present_is_inconclusive_not_contradicted() {
+        // PHASE 2: a log occurrence COUNT may inform but never contradict. Heavy
+        // observed traffic against a "nobody uses it" claim is a strong usage
+        // signal, but a log window can over/under-count — so we surface it at
+        // Inconclusive (with the evidence) rather than accusing the agent of a
+        // lie on a count. Only structured binary facts contradict.
         let claim = usage_claim(0);
         let results = [log_result(12481)];
         let d = decide(&VerdictInput {
@@ -1238,7 +1347,9 @@ mod tests {
             symbol_status: None,
             dependency_index_populated: None,
         });
-        assert_eq!(d.status, VerdictStatus::Contradicted);
+        assert_eq!(d.status, VerdictStatus::Inconclusive);
+        assert!(!d.structured);
+        assert!(!d.evidence_ids.is_empty() || !d.caveats.is_empty());
     }
 
     #[test]
@@ -1259,8 +1370,10 @@ mod tests {
     }
 
     #[test]
-    fn positive_usage_claim_contradicted_when_no_code_refs() {
-        // "X is still used" but it's defined and referenced nowhere -> Contradicted.
+    fn positive_usage_claim_inconclusive_when_no_code_refs() {
+        // PHASE 2: "X is still used" but a TEXT SCAN finds zero references. A
+        // dynamic/reflected use is invisible to the scan, so zero is a dead-code
+        // hint, not proof the claim is a lie — Inconclusive, not Contradicted.
         let claim = usage_claim(1);
         let d = decide(&VerdictInput {
             claim: &claim,
@@ -1271,7 +1384,8 @@ mod tests {
             symbol_status: None,
             dependency_index_populated: None,
         });
-        assert_eq!(d.status, VerdictStatus::Contradicted);
+        assert_eq!(d.status, VerdictStatus::Inconclusive);
+        assert!(!d.structured);
     }
 
     #[test]
@@ -1580,11 +1694,34 @@ mod tests {
             VerdictStatus::PartiallySupported
         );
 
+        // PHASE 2: zero changed-LINE hits no longer contradicts — line count is a
+        // proxy for changed SITES (a rename/helper can change the subject without
+        // a line literally mentioning it), so a zero is a hint, not a lie.
         let zero = [pred_item("diff_hits", json!(0), json!({"from_diff": true}))];
         assert_eq!(
             decide_with(&claim, &zero).status,
-            VerdictStatus::Contradicted
+            VerdictStatus::Inconclusive
         );
+    }
+
+    #[test]
+    fn structured_flag_separates_binary_facts_from_counts() {
+        // PHASE 3 relies on this: a CONTRADICTED verdict is `structured` only when
+        // it rests on a binary fact (diff/AST/value/exit-code). A value mismatch
+        // (exact comparison) is structured → may stand for a prose-parsed claim.
+        let value_lie = typed_claim(ClaimType::RetryCount, "retry_count", Some(json!(3)));
+        let def = [def_item("retry_count", 5.0)];
+        let d = decide_with(&value_lie, &def);
+        assert_eq!(d.status, VerdictStatus::Contradicted);
+        assert!(d.structured, "an exact value mismatch is a structured fact");
+
+        // A symbol-removed lie verified against the diff is structured.
+        let removed = typed_claim(ClaimType::SymbolExists, "parse_legacy", None);
+        // (No items → not present; with a diff item showing it survives it would
+        // contradict structurally. Here we just assert the count helpers are the
+        // only non-structured path, exercised by the phase-2 tests above which
+        // assert `!d.structured` on the demoted count verdicts.)
+        let _ = removed;
     }
 
     #[test]

@@ -48,7 +48,10 @@ fn fixture_parses() {
 
 #[test]
 fn all_cases_pass_with_correct_expectations() {
-    let f: Fixture = serde_yaml::from_str(&fixture_yaml("contradicted")).unwrap();
+    // PHASE 2: the unused-endpoint usage-count case is now `inconclusive`, not
+    // `contradicted` — a log count informs but never accuses. With the correct
+    // expectation both cases pass.
+    let f: Fixture = serde_yaml::from_str(&fixture_yaml("inconclusive")).unwrap();
     let report = run_eval(&offline_config(), &f).unwrap();
     assert_eq!(report.passed, 2);
     assert_eq!(report.failed, 0);
@@ -57,13 +60,15 @@ fn all_cases_pass_with_correct_expectations() {
 
 #[test]
 fn wrong_expectation_is_reported_as_failure() {
-    // Expect "supported" for the unused-endpoint case, which is actually contradicted.
+    // Expect "supported" for the unused-endpoint case, which is actually
+    // inconclusive after phase 2 (a usage count never contradicts/supports an
+    // absence claim outright) — the harness must report the mismatch.
     let f: Fixture = serde_yaml::from_str(&fixture_yaml("supported")).unwrap();
     let report = run_eval(&offline_config(), &f).unwrap();
     assert_eq!(report.failed, 1);
     let failing = report.cases.iter().find(|c| !c.passed).unwrap();
     assert_eq!(failing.expected_status, "supported");
-    assert_eq!(failing.actual_status, "contradicted");
+    assert_eq!(failing.actual_status, "inconclusive");
 }
 
 #[test]

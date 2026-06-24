@@ -176,8 +176,10 @@ fn record_eval_captures_actual_status() {
     let fixture: Fixture = serde_yaml::from_str(&yaml).unwrap();
     let recorded = record_eval(&offline_config(), &fixture).unwrap();
     assert_eq!(recorded.cases.len(), 1);
-    // Recorded expected_status is the ACTUAL status (contradicted), not the input.
-    assert_eq!(recorded.cases[0].expected_status, "contradicted");
+    // Recorded expected_status is the ACTUAL status, not the input. PHASE 2: a
+    // usage log count is now `inconclusive` (informs, never accuses), with the
+    // evidence still attached.
+    assert_eq!(recorded.cases[0].expected_status, "inconclusive");
     assert!(recorded.cases[0].recorded.evidence_count >= 1);
     assert!(!recorded.cases[0].recorded.summary.is_empty());
 }

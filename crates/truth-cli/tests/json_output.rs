@@ -59,7 +59,9 @@ fn check_json_is_valid_and_has_stable_keys() {
     ] {
         assert!(parsed.get(key).is_some(), "missing key {key}");
     }
-    assert_eq!(parsed["status"], "contradicted");
+    // PHASE 2: a usage log count yields `inconclusive` (informs, never accuses),
+    // but the log evidence is still attached — JSON shape and source unchanged.
+    assert_eq!(parsed["status"], "inconclusive");
     assert!(parsed["evidence"]
         .as_array()
         .unwrap()

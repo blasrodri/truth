@@ -33,7 +33,11 @@ fn setup() -> (rusqlite::Connection, Config) {
 }
 
 #[test]
-fn checkout_usage_is_contradicted() {
+fn checkout_usage_count_is_inconclusive_not_contradicted() {
+    // PHASE 2: "nobody uses X" vs observed log traffic is a COUNT signal — it
+    // informs but never contradicts. Heavy traffic is surfaced at Inconclusive
+    // (the user still sees it) rather than accusing the agent of lying on a
+    // count. Only structured binary facts (diff/AST/value/exit-code) contradict.
     let (conn, config) = setup();
     let out = check::run_check(
         &conn,
@@ -43,8 +47,9 @@ fn checkout_usage_is_contradicted() {
         Some(&sample_log()),
     )
     .unwrap();
-    assert_eq!(out.decision.status, VerdictStatus::Contradicted);
-    assert!(out.response_text.contains("Contradicted."));
+    assert_eq!(out.decision.status, VerdictStatus::Inconclusive);
+    // The traffic evidence is preserved, not discarded.
+    assert!(!out.decision.caveats.is_empty());
 }
 
 #[test]
@@ -76,7 +81,11 @@ fn port_is_supported() {
 }
 
 #[test]
-fn webhook_errors_not_fixed_is_contradicted() {
+fn webhook_errors_count_is_inconclusive_not_contradicted() {
+    // PHASE 2: "errors are fixed" vs an error log COUNT — the observed errors may
+    // predate the fix or stem from another cause, so a count can't prove the
+    // claim false. Surfaced at Inconclusive for the user to investigate, never a
+    // contradiction.
     let (conn, config) = setup();
     let out = check::run_check(
         &conn,
@@ -86,7 +95,7 @@ fn webhook_errors_not_fixed_is_contradicted() {
         Some(&sample_log()),
     )
     .unwrap();
-    assert_eq!(out.decision.status, VerdictStatus::Contradicted);
+    assert_eq!(out.decision.status, VerdictStatus::Inconclusive);
 }
 
 #[test]

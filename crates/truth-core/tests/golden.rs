@@ -59,7 +59,10 @@ fn def(predicate: &str, value: f64) -> EvidenceItem {
 }
 
 #[test]
-fn golden_usage_contradicted() {
+fn golden_usage_count_is_inconclusive_not_contradicted() {
+    // PHASE 2: a log occurrence count informs but never contradicts. Observed
+    // traffic against "nobody uses it" is surfaced at Inconclusive (with the
+    // evidence) — only structured binary facts (diff/AST/value/exit code) accuse.
     let c = claim(ClaimType::UsageCount, json!(0));
     let results = [route_count(12481)];
     let d = decide(&VerdictInput {
@@ -71,7 +74,7 @@ fn golden_usage_contradicted() {
         symbol_status: None,
         dependency_index_populated: None,
     });
-    assert_eq!(d.status, VerdictStatus::Contradicted);
+    assert_eq!(d.status, VerdictStatus::Inconclusive);
 }
 
 #[test]

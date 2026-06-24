@@ -45,8 +45,13 @@ cases:
     repo: examples/sample-repo
     expected_status: contradicted
 
+  # PHASE 2: the old phrasing led with "nobody uses ..." which classifies as a
+  # USAGE claim (now inconclusive — a log count never accuses). This case is
+  # named for a structured EXISTENCE lie (deleted a route that's still defined),
+  # so phrase it as the removal claim it's meant to test — that contradicts on
+  # the indexed route, a binary fact.
   - name: B3 agent claims it deleted a route that is still there
-    question: nobody uses /v1/checkout anymore, I removed it
+    question: I removed the /v1/checkout route
     repo: examples/sample-repo
     local_log: examples/sample-logs/api.log
     expected_status: contradicted

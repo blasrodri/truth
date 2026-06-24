@@ -1,9 +1,12 @@
 cases:
-  - name: unused endpoint contradicted
+  # PHASE 2: a usage/error LOG COUNT informs but never contradicts — observed
+  # traffic against "nobody uses it" is surfaced at inconclusive, not used to
+  # accuse the agent of lying on a count. Only structured facts contradict.
+  - name: unused endpoint count is inconclusive
     question: nobody uses /v1/checkout anymore
     repo: examples/sample-repo
     local_log: examples/sample-logs/api.log
-    expected_status: contradicted
+    expected_status: inconclusive
 
   - name: retry count contradicted
     question: we retry payments 3 times

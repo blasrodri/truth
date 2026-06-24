@@ -438,23 +438,51 @@ pub fn verify_claims(
     };
 
     // Agent-provided structured claims take precedence (precise, no segmenting);
-    // otherwise fall back to segmenting the raw message ourselves.
-    let segments: Vec<String> = match claims {
-        Some(list) => list
-            .iter()
-            .map(|c| c.trim().to_string())
-            .filter(|c| !c.is_empty())
-            .collect(),
-        None => segment(message),
+    // otherwise fall back to segmenting the raw message ourselves. The PROVENANCE
+    // of each claim decides whether it may contradict (phase 3):
+    //   - agent-supplied claims  → the LLM that wrote the code parsed its own
+    //     sentence; trust it, full verdict power including Contradicted.
+    //   - our own prose-segmentation → the regex extractor's FP surface. A
+    //     contradiction here is trusted ONLY when it rests on a STRUCTURED fact
+    //     (a file present/absent in the diff, an AST symbol, an exact value, a
+    //     command exit code) — `decision.structured`. A contradiction NOT so
+    //     backed (a count, or a verdict on a possibly-mis-extracted subject) is
+    //     downgraded to Inconclusive: that's the false-accusation surface the
+    //     precision gate drives to zero. After phase 2 counts no longer
+    //     contradict at all, so what survives for prose is exactly the sound,
+    //     binary-fact contradictions ("I removed X" but X is still in the diff).
+    let (segments, from_prose): (Vec<String>, bool) = match claims {
+        Some(list) => (
+            list.iter()
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty())
+                .collect(),
+            false,
+        ),
+        None => (segment(message), true),
     };
 
     let mut verdicts = Vec::new();
     for seg in segments {
         let outcome = run_check(conn, config, &seg, Trigger::Cli, local_log)?;
         let citation = first_citation(&outcome.evidence);
+        // Prose-provenance gate: a contradiction from our own segmentation holds
+        // only when the verdict engine tagged it `structured` — a binary fact
+        // (diff presence/absence, AST/index symbol or route, exact value, command
+        // exit code). A non-structured contradiction (a count, after phase 2
+        // already downgraded those) is the false-accusation surface and refuses.
+        // The engine decides structured-ness, not a string-sniff here.
+        let status = if from_prose
+            && outcome.decision.status == VerdictStatus::Contradicted
+            && !outcome.decision.structured
+        {
+            VerdictStatus::Inconclusive
+        } else {
+            outcome.decision.status
+        };
         verdicts.push(ClaimVerdict {
             text: seg,
-            status: outcome.decision.status,
+            status,
             confidence: outcome.decision.confidence,
             checkable: outcome.claim.is_checkable,
             citation,

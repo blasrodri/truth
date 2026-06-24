@@ -755,6 +755,8 @@ fn downgrade_inferred_contradiction(
         evidence_ids: decision.evidence_ids,
         caveats,
         suggested_action: None,
+        // An inferred-subject refusal is not a structured fact.
+        structured: false,
     }
 }
 
@@ -992,6 +994,7 @@ mod tests {
             evidence_ids: vec!["repo:route_exists".into()],
             caveats: vec!["Interpreted this as `/v1/checkout` (confidence 31%).".into()],
             suggested_action: Some("...".into()),
+            structured: true,
         };
         let down = downgrade_inferred_contradiction(d, Some("/v1/checkout"));
         assert_eq!(down.status, truth_core::enums::VerdictStatus::Inconclusive);

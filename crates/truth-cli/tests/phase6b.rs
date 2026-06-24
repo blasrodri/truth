@@ -40,8 +40,13 @@ fn claim_file_for(extra_status: bool) -> ClaimFile {
             String::new()
         }
     };
+    // PHASE 2: the contradicting claim must rest on a STRUCTURED fact, since
+    // usage/error log counts no longer contradict. A wrong retry count
+    // contradicts via exact value comparison against the indexed source — the
+    // sound, binary kind of contradiction `report`/`ci` should count. (The id is
+    // kept as `checkout-unused` so the assertions referencing it still resolve.)
     let yaml = format!(
-        "version: 1\ndefaults:\n  repo: {repo}\n  local_log: {log}\nclaims:\n  - id: checkout-unused\n    text: nobody uses /v1/checkout anymore\n    severity: warning\n{s1}  - id: service-port\n    text: the service runs on port 8080\n    severity: info\n{s2}",
+        "version: 1\ndefaults:\n  repo: {repo}\n  local_log: {log}\nclaims:\n  - id: checkout-unused\n    text: we retry payments 3 times\n    severity: warning\n{s1}  - id: service-port\n    text: the service runs on port 8080\n    severity: info\n{s2}",
         repo = sample_repo().display(),
         log = sample_log(),
         s1 = status("contradicted"),
