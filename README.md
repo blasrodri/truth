@@ -46,6 +46,14 @@ X" scope claims, renames, and *"tests pass"* (against recorded runs) — and
 **refuses** the rest (*"this is cleaner"*) instead of guessing. A refusal is
 honest, not a gap: a verifier that bluffs is worse than none.
 
+The harder half is the other direction: **a verifier that false-accuses gets
+uninstalled day one.** So `truth` only ever says `Contradicted` on a structured
+binary fact — a diff, an AST symbol, an exact value, an exit code — never on a
+noisy count, and never on a contradiction it parsed out of prose unless that fact
+backs it. That property is measured, not asserted: a labeled corpus of real agent
+over-claims holds the false-contradiction rate at **0** as a hard CI gate. When
+`truth` blocks, it means it.
+
 Everything runs **locally**. The store is a single SQLite file in `.truth/`;
 raw logs are never persisted (only redacted aggregates); your code never leaves
 the machine. No LLM, network, or account is required.
@@ -314,20 +322,35 @@ emits stable machine-readable output.
 
 ## What it can and cannot check
 
+**Contradicts only on a structured fact.** A `Contradicted` verdict always rests
+on a binary fact `truth` read directly: a file present/absent in the working-tree
+diff, an AST/index symbol or route, an exact value comparison, or a command exit
+code. Soft signals — a reference count, a log-occurrence count, a changed-line
+count — can be wrong (a text scan over-counts comments; a log window samples), so
+they **inform but never accuse**: they surface at `Inconclusive` with their
+evidence, never as a contradiction. Contradicting a truthful agent on a noisy
+count is the one failure that gets a verifier uninstalled, so it is structurally
+impossible, and a labeled corpus gates the false-contradiction rate to **0** in
+CI (`fixtures/precision/`, `scripts/precision_gate.sh`).
+
 **Checks (state claims):** route added/removed/exists, **function/symbol
 added/removed/exists**, config value, named constant ("changed X from 3 to 5"
 checks the *5*), retry count, timeout value, env var present, dependency used,
-version required, usage count, error-still-happening, job-last-success,
-feature-flag enabled — across **Rust / TypeScript / Python / Go** — against
-**code + git diff + logs**, with the diff outranking a possibly-stale index
-for "I just changed X" claims.
+version required, feature-flag enabled — across **Rust / TypeScript / Python /
+Go** — against **code + git diff + logs**, with the diff outranking a
+possibly-stale index for "I just changed X" claims.
+
+**Flags but does not contradict (count-based):** *"nobody uses X"* /
+*"errors are fixed"* (log-occurrence counts), *"X is unused"* (code-reference
+scan), *"updated all 4 call sites"* (changed-line count). These surface their
+evidence at `Inconclusive` — a flagged suspicion to act on, not a verdict that
+blocks — because a count can't prove a claim is a lie.
 
 **Checks (diff claims — what THIS turn changed):** *"I edited/created/deleted
 `src/auth.rs`"* (the diff's file list decides), *"I **only** changed the
 parser"* (catches collateral edits — every changed path must match), *"renamed
-`parse_legacy` to `parse_v2`"* (old name must be gone AND the new one added),
-*"updated all 4 call sites of X"* (changed-line count). An empty diff reports
-**unknown (already committed?)** — never a free pass.
+`parse_legacy` to `parse_v2`"* (old name must be gone AND the new one added). An
+empty diff reports **unknown (already committed?)** — never a free pass.
 
 **Checks (command receipts):** *"tests pass"*, *"it compiles"*, *"clippy is
 clean"* — verified against runs recorded by `truth run -- cargo test` (or the
@@ -381,22 +404,26 @@ before being stored or shown.
 
 ## Benchmarks
 
-The quality bar is enforced by an in-repo eval harness, not asserted in prose —
-every number below reproduces with `truth eval`. Latest run (`truth 0.3.8`,
-extractor `mixed`):
+The quality bar is enforced by in-repo gates, not asserted in prose — every
+number below reproduces with `truth eval` / `scripts/precision_gate.sh`:
 
 | Fixture | Cases | Passed | What it measures |
 |---|--:|--:|---|
 | `agent_claims.yaml` | 13 | 13 | agent-phrased claims: true → Supported, lies → Contradicted, judgments → Refused |
 | `extractor_corpus.yaml` | 42 | 42 | the same facts phrased many ways (incl. hard prose), across value/route/symbol/dep claims |
 | `basic.yaml` + `claims.yaml` | 7 | 7 | end-to-end verdicts and claim-file format |
-| **Total** | **62** | **62** | |
+| `precision/*` (gate) | 55 | 55 | **false-contradiction gate**: real SWE-bench over-claims + known-FP prose, all must `Inconclusive` — 0 may flip to `Contradicted` |
 
-The numbers that matter for a verifier are asymmetric: **0 false passes** (no lie
-returned Supported, no vague claim returned a verdict) and **0 recall misses**
-on the current corpus. The design guarantees the *only* failure mode is refusing
-too much — never passing a lie. Full table (claim types, supported languages,
-false-positive/false-negative behavior) and reproduction steps:
+The number that matters most for a verifier is asymmetric: **0 false
+contradictions**. The precision corpus is built from *real* agent over-claims
+(SWE-bench, auto-labeled against each agent's actual patch) plus every prose
+pattern that has ever false-accused `truth` on its own repo; CI fails the build
+if any of them flips to `Contradicted`. Recall (catching real lies) is reported
+but deliberately **not** gated — a verifier earns trust by never crying wolf
+first. `truth stats --review` is the live counterpart: it re-runs past
+contradictions through the current engine and flags any that no longer fire,
+self-auditing the lie ledger for false positives an engine fix has retired. Full
+table (claim types, languages, FP/FN behavior) and reproduction:
 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 ## Limitations & threat model
@@ -404,8 +431,14 @@ false-positive/false-negative behavior) and reproduction steps:
 `truth` is a tool about trust, so it states its own boundaries plainly. The
 short version:
 
-- **A Contradicted verdict is strong** — the claim disagrees with primary
-  evidence `truth` read directly (code, diff, or a recorded run).
+- **A Contradicted verdict is strong — by construction.** It only fires on a
+  structured binary fact (diff presence/absence, AST/index symbol or route, exact
+  value, command exit code); count-based signals can only `Inconclusive`. And a
+  contradiction `truth` itself parsed out of an agent's prose (its own
+  segmentation, the imprecise path) is downgraded to `Inconclusive` unless it
+  rests on such a fact — so a mis-parse can't become a false accusation. The
+  false-contradiction rate is gated to **0** against a labeled corpus of real
+  agent over-claims in CI.
 - **A Supported verdict is weaker by design** — "consistent with the evidence I
   could read," not "true in every sense." It does not prove the code is
   *correct*, only that it matches the claim.
