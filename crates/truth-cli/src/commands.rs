@@ -76,15 +76,101 @@ fn ensure_gitignored(patterns: &[&str]) -> Result<Option<Vec<String>>> {
     Ok(Some(to_add))
 }
 
-/// `truth setup` — the one-command per-repo onboarding: init the store,
-/// install the Claude Code hooks, and register the MCP server (best-effort,
-/// skipped when the `claude` CLI isn't installed).
+/// `truth setup` — the one-command per-repo onboarding: init the store, index
+/// the repo, install the Claude Code hooks, register the MCP server, and — the
+/// important part — end with a LIVE PROOF that truth is reading THIS repo, plus
+/// a concrete statement of what changes now. A silent "you're all set" install
+/// is why tools get forgotten; setup shows itself working on the user's own
+/// code before it's done.
 pub fn setup() -> Result<()> {
+    println!("Setting up truth for this repo…\n");
+
+    // 1. Store + config (init prints its own lines; keep them, they're real).
     init()?;
+
+    // 2. Index — a real count the user can see.
+    let config = load_config()?;
+    if let Ok(conn) = truth_db::open(&config.database.path) {
+        let _ = truth_indexer::index_repo(&conn, &config.repo, Some(Path::new(&config.repo.root)));
+        if let Ok(status) = truth_db::repo::index_status(&conn) {
+            println!("  ✓ Indexed        {} artifacts", status.artifacts);
+        }
+    }
+
+    // 3. Hooks + MCP (each prints its own confirmation).
     crate::hook::install(false, false)?;
     register_mcp_with_claude();
-    println!("\ntruth is set up for this repo. Optional: run tests via `truth run -- <cmd>` so \"tests pass\" claims are verifiable.");
+
+    // 4. LIVE PROOF — verify a real fact derived from THIS repo, so the user
+    //    sees truth deciding from their own evidence, not a canned example.
+    setup_live_proof(&config);
+
+    // 5. What changes now — concrete, not a vague "optional" tip.
+    println!("\nYou're set. From now on, in this repo:");
+    println!("  • Your coding agent's \"done\" is fact-checked before you read it.");
+    println!("  • \"tests pass\" won't be accepted unless the tests actually ran");
+    println!("    (run them via `truth run -- <cmd>`, or let the hook record them).");
+    println!("  • See what truth has caught anytime:  truth stats");
+    println!(
+        "\ntruth also catches agent lies its own work disproves — e.g. claiming a file was\n\
+         created when the diff never made it. How that's measured: docs/BENCHMARKS.md."
+    );
     Ok(())
+}
+
+/// Run one real verification against the repo and print the verdict, so setup
+/// ends by SHOWING truth work on the user's own code. Uses a fact truth derives
+/// from git — the current HEAD sha — so it's grounded in their repo, never a
+/// planted or fake claim. Best-effort: prints nothing on any failure (outside
+/// git, empty repo) rather than a confusing half-result.
+fn setup_live_proof(config: &Config) {
+    let root = &config.repo.root;
+    let head = git_short_sha(root);
+    let Some(sha) = head else { return };
+
+    let claim = format!("the current commit is {sha}");
+    let proof = (|| -> Result<String> {
+        let conn = truth_db::open(&config.database.path)?;
+        let report =
+            crate::verify_turn::verify_claims(&conn, config, &claim, Some(&[claim.clone()]), None)?;
+        Ok(crate::verify_turn::render_text(&report))
+    })();
+
+    if let Ok(table) = proof {
+        // Only show it if truth actually produced a Supported line — a grounded
+        // win. If it refused (unlikely here), stay quiet rather than confuse.
+        if table.contains("Supported") {
+            println!(
+                "\n  Trying it on THIS repo — truth just checked a claim from your own git:\n"
+            );
+            for line in table.lines() {
+                let t = line.trim();
+                if t.starts_with('✓') {
+                    println!("    {t}");
+                }
+            }
+            println!("\n  ↑ Decided from your repo's git state, not a model. Your agent gets the");
+            println!("    same deterministic check on every claim it makes.");
+        }
+    }
+}
+
+/// Current HEAD short sha for `dir`, or None outside git / on any error.
+/// The grounded live-proof at the end of `setup` verifies the claim
+/// "the current commit is <sha>" against this, so it must never return a
+/// fabricated value — outside git it stays None and setup shows no proof.
+fn git_short_sha(dir: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!sha.is_empty()).then_some(sha)
 }
 
 /// Register `truth-mcp` with Claude Code (user scope) if the CLI is present
@@ -356,4 +442,46 @@ pub(crate) fn open_db(config: &Config) -> Result<Connection> {
 /// Load `truth.toml` from the nearest truth root (see `config_util`).
 fn load_config() -> Result<Config> {
     crate::config_util::load_config()
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::git_short_sha;
+
+    #[test]
+    fn git_short_sha_none_outside_git() {
+        // A non-git temp dir must yield None so setup shows no proof rather than
+        // a fabricated sha.
+        let dir = std::env::temp_dir().join(format!("truth_nogit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(git_short_sha(&dir.to_string_lossy()), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn git_short_sha_returns_head_in_a_repo() {
+        let dir = std::env::temp_dir().join(format!("truth_git_sha_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap();
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "x").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "b", "--no-gpg-sign"]);
+        let sha = git_short_sha(&dir.to_string_lossy()).expect("sha in a repo");
+        assert!(sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
