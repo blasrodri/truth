@@ -2,7 +2,7 @@
 
 **`truth` is a deterministic fact-checker for the claims an AI coding agent makes about its own work.**
 
-When an agent says *"I added the `/v1/refund` route, set `MAX_RETRIES` to 5, only touched the parser, and tests pass,"* `truth` checks each claim against the **real code, the working-tree git diff, recorded command runs, and logs**, and answers **Supported / Contradicted / Refused** — every verdict cited.
+When an agent says *"I added the `/v1/refund` route, set `MAX_RETRIES` to 5, only touched the parser, and tests pass,"* `truth` checks each claim against the **real code, the working-tree git diff, recorded command runs, and logs**, and answers **Supported / Contradicted / Unproven / Refused** — every verdict cited.
 
 It is not a chatbot and it does not decide truth with a model. A language model only parses the agent's sentence into a structured claim; a fixed-rule engine decides the verdict from retrieved evidence. **The agent cannot talk it into a different answer.**
 
@@ -18,12 +18,20 @@ $ truth verify-turn "I added the /v1/refund endpoint, set MAX_RETRIES to 3, I on
   ✓ Supported     I added the /v1/refund endpoint  (src/api.rs)
   ✗ Contradicted  set MAX_RETRIES to 3             (src/config.rs:1)
   ✗ Contradicted  I only changed src/api.rs        (src/api.rs)
-  ✗ Contradicted  tests pass                       (recorded 2026-06-11 09:14 UTC)
+  ! Unproven      tests pass
 
-  1 supported · 3 contradicted · 0 refused
+  1 supported · 2 contradicted · 1 unproven · 0 refused
 
   ⚠ The agent's message contradicts the evidence above.
+  ! You claimed a command succeeded without a recorded run. Run it through
+    `truth run -- <cmd>` and re-verify — truth won't confirm an unproven "it passes".
 ```
+
+`truth` won't take *"tests pass"* on faith. With no recorded run to back it the
+claim is **Unproven** — not a shrug, a demand: it blocks the agent's turn (via
+the Stop hook) until the command is actually run through `truth run`. Verify a
+real receipt and it flips to `Supported`; run it and it fails, and it's
+`Contradicted`.
 
 **Jump to:** [Install](#install) · [Try in 60 seconds](#try-in-60-seconds) ·
 [Use from your agent (MCP)](#use-it-from-your-coding-agent-mcp) ·
@@ -42,17 +50,30 @@ the SWE-bench eval, claims judged by an LLM, [reproducible](docs/BENCHMARKS.md#e
 
 `truth` catches the **checkable** subset of those claims — wrong config values,
 routes/functions claimed added or removed, files claimed edited, "I only changed
-X" scope claims, renames, and *"tests pass"* (against recorded runs) — and
-**refuses** the rest (*"this is cleaner"*) instead of guessing. A refusal is
-honest, not a gap: a verifier that bluffs is worse than none.
+X" scope claims, renames, git state ("committed as `<sha>`", "pushed to origin
+main"), and *"tests pass"* — and **refuses** the genuinely unverifiable rest
+(*"this is cleaner"*) instead of guessing. A refusal is honest, not a gap: a
+verifier that bluffs is worse than none.
+
+It also won't accept *"tests pass"* on faith. A success claim with no recorded
+run is **Unproven** — checkable in principle, evidence withheld — and `truth`
+**demands the proof**: it blocks the agent's turn until the command is actually
+run through `truth run`. It never runs the command itself (no sandbox, no
+executing agent code); it makes the agent prove its own claim.
 
 The harder half is the other direction: **a verifier that false-accuses gets
 uninstalled day one.** So `truth` only ever says `Contradicted` on a structured
 binary fact — a diff, an AST symbol, an exact value, an exit code — never on a
 noisy count, and never on a contradiction it parsed out of prose unless that fact
 backs it. That property is measured, not asserted: a labeled corpus of real agent
-over-claims holds the false-contradiction rate at **0** as a hard CI gate. When
-`truth` blocks, it means it.
+over-claims holds the false-contradiction rate at **0** as a hard CI gate — and
+every contradiction `truth` has ever issued across ~15 of the author's own repos
+is a regression test. When `truth` blocks, it means it.
+
+Measured the other way too: replaying **84 real SWE-bench trajectories where the
+agent claimed success on a task it actually failed**, `truth` caught a
+file-operation over-claim in **17% of them at zero false accusations** — the
+agent said it created/removed/edited a file its own patch never touched.
 
 Everything runs **locally**. The store is a single SQLite file in `.truth/`;
 raw logs are never persisted (only redacted aggregates); your code never leaves
@@ -262,12 +283,15 @@ This registers two Claude Code hooks:
 
 - **Stop** — when the agent finishes its turn, its final message is
   fact-checked against the repo, the working-tree diff, and recorded runs.
-  Contradictions **block the stop** and feed the cited verdict back, so the
-  agent corrects itself before you ever read the claim.
-- **PostToolUse (Bash)** — test/build/lint commands the agent runs are
-  recorded as command receipts automatically, which is what makes its later
-  *"tests pass"* checkable. (Receipts are only recorded when the hook payload
-  carries a real exit code — never guessed.)
+  A contradiction **blocks the stop** and feeds the cited verdict back, so the
+  agent corrects itself before you ever read the claim. An **unproven** success
+  claim (*"tests pass"* with no recorded run) also blocks — the agent is sent
+  back to run the command through `truth run` before it can finish.
+- **PostToolUse / PostToolUseFailure (Bash)** — test/build/lint/fmt commands the
+  agent runs are recorded as command receipts automatically (on success *and*
+  failure), which is what makes its later *"tests pass"* checkable — no manual
+  `truth run` needed. Install just these, without the blocking Stop gate, with
+  `truth hook install --receipts` (recommended for a global `--user` install).
 
 Both hooks are fail-open: if truth errors, the session is never wedged. And
 they're zero-setup: in a git repo that never ran `truth init`, the hooks
@@ -418,7 +442,9 @@ agent message
     untracked files) + command receipts (`truth run`) + log queries
   → deterministic verdict engine (fixed rules, source-authority order,
     diff > stale index, receipts must postdate the last edit)
-  → cited verdict: Supported / Contradicted / Refused
+  → cited verdict: Supported / Contradicted / Unproven / Refused
+     (Unproven = checkable but the agent withheld the proof, e.g. "tests pass"
+      with no recorded run — blocks the turn until the command is actually run)
 ```
 
 Every check is stored as an audit trail (the claim, the queries run, the
