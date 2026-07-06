@@ -685,8 +685,56 @@ impl ClaimExtractor for RegexExtractor {
                 || lower.contains("confirms")
                 || lower.contains("confirmed"))
                 && only_backtick_signal;
+            // Reasoning / exploration prose that merely MENTIONS a backticked
+            // symbol is not an existence CLAIM: "it seems the `Event` class is
+            // not found", "to locate the `Event` class", "since `Foo` is not
+            // defined directly". This is the agent thinking out loud mid-task —
+            // often AGREEING a symbol is absent — and judging it as
+            // `symbol_exists` produced the dominant residual false-contradiction
+            // class in the SWE-bench recall replay (53/56 hits were narrative
+            // like this). Two signatures, both gated on backtick-only signal:
+            //   (a) HEDGE/EXPLORE openers: "it seems", "it looks", "to locate",
+            //       "to find", "let's", "since", "maybe", "perhaps", "trying to".
+            //   (b) NEGATIVE-existence phrasing: "not found", "not defined",
+            //       "does not exist", "can't find", "no such" — the agent is
+            //       asserting ABSENCE, so contradicting on "the symbol is absent"
+            //       accuses a truthful observation. (A real "I REMOVED X" claim
+            //       carries a change verb and is handled by the `removed` branch,
+            //       not this narrative path.)
+            // Negative-existence phrasing ALWAYS suppresses, regardless of
+            // `only_backtick_signal`: "not defined"/"not found" contain the
+            // words "defined"/"found" that would otherwise register as a symbol
+            // signal AND disable the backtick-only guard — so the agent
+            // asserting a symbol is ABSENT would be contradicted for it. A real
+            // removal claim ("I removed `X`") uses a change verb, not "not
+            // found", and is handled by the `removed` branch.
+            let negative_existence = lower.contains("not found")
+                || lower.contains("not defined")
+                || lower.contains("does not exist")
+                || lower.contains("doesn't exist")
+                || lower.contains("isn't defined")
+                || lower.contains("is not present")
+                || lower.contains("can't find")
+                || lower.contains("cannot find")
+                || lower.contains("no such");
+            // Hedge/explore openers only matter when the backtick is the sole
+            // signal (otherwise a real change verb is present and decides).
+            let hedge_prose = only_backtick_signal
+                && (lower.contains("it seems")
+                    || lower.contains("it looks")
+                    || lower.contains("to locate")
+                    || lower.contains("to find")
+                    || lower.contains("to efficiently")
+                    || lower.starts_with("since ")
+                    || lower.contains(" since the ")
+                    || lower.contains("maybe")
+                    || lower.contains("perhaps")
+                    || lower.contains("trying to"));
+            let reasoning_prose = negative_existence || hedge_prose;
             {
-                if let Some(name) = name.filter(|_| has_symbol_signal && !test_outcome_prose) {
+                if let Some(name) =
+                    name.filter(|_| has_symbol_signal && !test_outcome_prose && !reasoning_prose)
+                {
                     let removed = lower.contains("removed")
                         || lower.contains("deleted")
                         || lower.contains("dropped")
@@ -1925,6 +1973,34 @@ mod tests {
             assert_eq!(c.claim_type, ClaimType::CommandSucceeded, "{text}");
             assert_eq!(c.subject.as_deref(), Some(kind), "{text}");
         }
+    }
+
+    #[test]
+    fn reasoning_prose_mentioning_a_symbol_is_not_a_symbol_claim() {
+        // The dominant residual FP class from the SWE-bench recall replay
+        // (53/56 raw contradictions): the agent thinking out loud mid-task,
+        // mentioning a backticked symbol — often AGREEING it's absent. Judging
+        // these as symbol-existence claims contradicts a truthful observation.
+        for text in [
+            "It seems that the `Event` class is not found with a direct search",
+            "To efficiently locate the `Event` class",
+            "Since the `Event` class is not found directly",
+            "it looks like the `Config` class is not defined",
+            "maybe the `Handler` type does not exist yet",
+            "trying to find where `parse_token` is used",
+        ] {
+            let c = RegexExtractor.extract(text);
+            assert_ne!(
+                c.claim_type,
+                ClaimType::SymbolExists,
+                "reasoning prose judged as a symbol claim: {text} -> {:?}",
+                c.subject
+            );
+        }
+        // A real change assertion with a change verb still extracts.
+        let c = RegexExtractor.extract("I added the `validate_token` function");
+        assert_eq!(c.claim_type, ClaimType::SymbolExists, "{c:?}");
+        assert_eq!(c.operator, ClaimOperator::Exists);
     }
 
     #[test]
