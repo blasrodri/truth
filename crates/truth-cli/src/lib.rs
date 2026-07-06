@@ -16,6 +16,7 @@ pub mod docs;
 pub mod doctor;
 pub mod eval;
 pub mod explain;
+pub mod git_facts;
 pub mod hook;
 pub mod inspect;
 pub mod owners;

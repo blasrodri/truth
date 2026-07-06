@@ -38,6 +38,12 @@ pub enum ClaimType {
     /// A command was run and succeeded ("tests pass", "it compiles"). Decided
     /// from recorded command receipts (`truth run`), never from prose.
     CommandSucceeded,
+    /// Git bookkeeping: "committed as <sha>", "pushed to origin main",
+    /// "committed on branch X", "the branch is no longer ahead". Decided from
+    /// the local git object store and remote-tracking refs — deterministic,
+    /// no network. `value` holds the asserted parts:
+    /// `{"sha":..,"pushed_to":..,"branch":..,"ahead_zero":bool}`.
+    GitState,
     Unknown,
 }
 

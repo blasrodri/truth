@@ -153,6 +153,7 @@ fn slug_for(c: &Candidate) -> String {
         ClaimType::ChangeCount => "count",
         ClaimType::SymbolRenamed => "rename",
         ClaimType::CommandSucceeded => "run",
+        ClaimType::GitState => "git",
         ClaimType::Unknown => "claim",
     };
     format!("{stem}-{kind}")

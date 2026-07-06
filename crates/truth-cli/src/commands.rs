@@ -81,7 +81,7 @@ fn ensure_gitignored(patterns: &[&str]) -> Result<Option<Vec<String>>> {
 /// skipped when the `claude` CLI isn't installed).
 pub fn setup() -> Result<()> {
     init()?;
-    crate::hook::install(false)?;
+    crate::hook::install(false, false)?;
     register_mcp_with_claude();
     println!("\ntruth is set up for this repo. Optional: run tests via `truth run -- <cmd>` so \"tests pass\" claims are verifiable.");
     Ok(())

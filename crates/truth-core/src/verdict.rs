@@ -111,7 +111,8 @@ pub fn question_type_for(claim_type: ClaimType) -> QuestionType {
         | ClaimType::OnlyChanged
         | ClaimType::ChangeCount
         | ClaimType::SymbolRenamed
-        | ClaimType::CommandSucceeded => QuestionType::CurrentImplementation,
+        | ClaimType::CommandSucceeded
+        | ClaimType::GitState => QuestionType::CurrentImplementation,
         ClaimType::ConfigValue
         | ClaimType::RetryCount
         | ClaimType::TimeoutValue
@@ -149,6 +150,7 @@ pub fn decide(input: &VerdictInput) -> VerdictDecision {
         ClaimType::ChangeCount => decide_change_count(input),
         ClaimType::SymbolRenamed => decide_renamed(input),
         ClaimType::CommandSucceeded => decide_command(input),
+        ClaimType::GitState => decide_git_state(input),
         ClaimType::Unknown => unreachable!(),
     }
 }
@@ -778,6 +780,12 @@ fn decide_file_changed(input: &VerdictInput) -> VerdictDecision {
             let ok = match expected {
                 "added" => actual == "added",
                 "deleted" => actual == "deleted",
+                // Locative claims ("added a helper IN auth.rs", "removed the
+                // loop FROM auth.rs") only assert the file was touched this
+                // turn — any diff status satisfies them. Reading the change
+                // verb as the file's own change kind was the largest false-
+                // accusation class in the field audit.
+                "touched" => true,
                 // "I edited X" is satisfied by any change that leaves the file
                 // present — a brand-new file still counts as edited.
                 _ => matches!(actual, "modified" | "added" | "renamed"),
@@ -810,19 +818,122 @@ fn decide_file_changed(input: &VerdictInput) -> VerdictDecision {
             status: VerdictStatus::Contradicted,
             confidence: 0.8,
             evidence_ids: vec!["diff:files".to_string()],
-            caveats: vec![format!(
-                "The working-tree diff does not touch `{subject}`."
-            )],
+            caveats: vec![format!("The working-tree diff does not touch `{subject}`.")],
             suggested_action: Some(
                 "Claimed a change to this file, but the diff doesn't include it.".to_string(),
             ),
             structured: true,
         },
-        None => inconclusive(
+        None => decide_file_changed_at_head(input, subject, expected),
+    }
+}
+
+/// Clean-tree fallback for a file-change claim: judge from what HEAD knows.
+/// The work may already be committed — a blanket refusal here made verify
+/// useless on committed repos (field audit), while "the file doesn't exist at
+/// all" is a sound structured contradiction of "I created/edited X".
+fn decide_file_changed_at_head(
+    input: &VerdictInput,
+    subject: &str,
+    expected: &str,
+) -> VerdictDecision {
+    let Some(item) = input
+        .items
+        .iter()
+        .find(|i| i.predicate.as_deref() == Some("head_file_status"))
+    else {
+        return inconclusive(
             "The working tree has no changes vs HEAD, so I can't verify what this turn changed (already committed?).",
             None,
-        ),
+        );
+    };
+    let tracked = item
+        .value_json
+        .as_ref()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let meta = &item.metadata_json;
+    let file = meta
+        .get("file")
+        .and_then(|v| v.as_str())
+        .unwrap_or(subject)
+        .to_string();
+    let in_head = meta
+        .get("in_head_commit")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let sha = meta
+        .get("head_sha")
+        .and_then(|v| v.as_str())
+        .unwrap_or("HEAD")
+        .to_string();
+    let ever_existed = meta
+        .get("ever_existed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if expected == "deleted" {
+        return if tracked {
+            VerdictDecision {
+                status: VerdictStatus::Contradicted,
+                confidence: 0.85,
+                evidence_ids: vec![format!("git:{file}@{sha}")],
+                caveats: vec![format!(
+                    "Claimed deleted, but `{file}` is still tracked at HEAD."
+                )],
+                suggested_action: Some("Re-check whether the deletion happened.".to_string()),
+                structured: true,
+            }
+        } else if ever_existed {
+            VerdictDecision {
+                status: VerdictStatus::Supported,
+                confidence: 0.8,
+                evidence_ids: vec![format!("git:{subject}:deleted")],
+                caveats: vec![format!(
+                    "Clean tree — `{subject}` existed in history and is gone at HEAD (deletion already committed)."
+                )],
+                suggested_action: None,
+                structured: true,
+            }
+        } else {
+            inconclusive(
+                "The file is absent, but nothing in history shows it ever existed — can't confirm a deletion.",
+                None,
+            )
+        };
     }
+
+    // added / modified / touched claims.
+    if !tracked {
+        return VerdictDecision {
+            status: VerdictStatus::Contradicted,
+            confidence: 0.85,
+            evidence_ids: vec![format!("git:{subject}:absent")],
+            caveats: vec![format!(
+                "Claimed {expected}, but `{subject}` does not exist in the repo (clean tree, not tracked at HEAD)."
+            )],
+            suggested_action: Some("Re-check the path — the file isn't there.".to_string()),
+            structured: true,
+        };
+    }
+    if in_head {
+        return VerdictDecision {
+            status: VerdictStatus::Supported,
+            confidence: 0.85,
+            evidence_ids: vec![format!("git:{file}@{sha}")],
+            caveats: vec![format!(
+                "Clean tree — `{file}` was changed in the HEAD commit ({sha}), consistent with work committed this turn."
+            )],
+            suggested_action: None,
+            structured: true,
+        };
+    }
+    inconclusive(
+        &format!(
+            "`{file}` exists at HEAD but wasn't part of the last commit — the tree is clean, so I can't attribute a change to this turn."
+        ),
+        None,
+    )
 }
 
 /// Scope claim ("I only changed X" / "no other files were touched"). Every
@@ -1151,6 +1262,175 @@ fn decide_command(input: &VerdictInput) -> VerdictDecision {
         evidence_ids: vec![format!("run:{command}")],
         caveats,
         suggested_action,
+        structured: true,
+    }
+}
+
+/// Git-state claims ("committed as <sha>", "pushed to origin main", "on
+/// branch X", "no longer ahead") — decided from a `git_state` evidence item
+/// the checker gathered from the LOCAL object store and remote-tracking refs.
+/// Every asserted part must hold for Supported; a hard miss (sha doesn't
+/// exist, remote-tracking ref doesn't contain it, branch missing, ahead > 0)
+/// contradicts — these are binary object-store facts, so `structured` is true.
+/// Missing evidence (no remotes, no upstream, git unavailable) refuses.
+fn decide_git_state(input: &VerdictInput) -> VerdictDecision {
+    let Some(item) = input
+        .items
+        .iter()
+        .find(|i| i.predicate.as_deref() == Some("git_state"))
+    else {
+        return inconclusive(
+            "No git evidence was gathered for this claim (not a git repo, or git unavailable).",
+            None,
+        );
+    };
+    let meta = &item.metadata_json;
+    let asserted = input.claim.value.clone().unwrap_or_default();
+
+    let mut caveats: Vec<String> = Vec::new();
+    let mut evidence_ids: Vec<String> = Vec::new();
+    let mut unverifiable: Vec<String> = Vec::new();
+
+    // Part 1: the commit sha exists locally.
+    if let Some(sha) = asserted.get("sha").and_then(|v| v.as_str()) {
+        match meta.get("sha_exists").and_then(|v| v.as_bool()) {
+            Some(true) => {
+                evidence_ids.push(format!("git:commit:{sha}"));
+                caveats.push(format!("Commit `{sha}` exists in the local object store."));
+            }
+            Some(false) => {
+                return VerdictDecision {
+                    status: VerdictStatus::Contradicted,
+                    confidence: 0.9,
+                    evidence_ids: vec![format!("git:commit:{sha}")],
+                    caveats: vec![format!("No commit `{sha}` exists in this repository.")],
+                    suggested_action: Some("Re-check the commit sha.".to_string()),
+                    structured: true,
+                };
+            }
+            None => unverifiable.push(format!("commit `{sha}`")),
+        }
+    }
+
+    // Part 2: pushed — the claimed rev is contained in a remote-tracking ref.
+    // `git push` updates the local tracking ref, so "not contained" means the
+    // push didn't happen FROM THIS CLONE; we still say so in the caveat.
+    if asserted.get("pushed_to").is_some() {
+        let target = asserted
+            .get("pushed_to")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        match meta.get("pushed").and_then(|v| v.as_bool()) {
+            Some(true) => {
+                let r = meta
+                    .get("remote_ref")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("a remote-tracking ref");
+                evidence_ids.push(format!("git:pushed:{r}"));
+                caveats.push(format!("The commit is contained in `{r}`."));
+            }
+            Some(false) => {
+                return VerdictDecision {
+                    status: VerdictStatus::Contradicted,
+                    confidence: 0.82,
+                    evidence_ids: vec!["git:pushed".to_string()],
+                    caveats: vec![format!(
+                        "No remote-tracking ref{} contains the commit — a push from this clone \
+                         would have updated it. (A push from another machine wouldn't show \
+                         until a fetch.)",
+                        if target.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" matching `{target}`")
+                        }
+                    )],
+                    suggested_action: Some(
+                        "Run `git push` (or re-check the remote/branch name).".to_string(),
+                    ),
+                    structured: true,
+                };
+            }
+            None => unverifiable.push("the push target".to_string()),
+        }
+    }
+
+    // Part 3: branch — it exists and (when a sha was named) contains the sha;
+    // otherwise the current branch matches.
+    if let Some(branch) = asserted.get("branch").and_then(|v| v.as_str()) {
+        match meta.get("branch_ok").and_then(|v| v.as_bool()) {
+            Some(true) => {
+                evidence_ids.push(format!("git:branch:{branch}"));
+                caveats.push(format!("Branch `{branch}` checks out."));
+            }
+            Some(false) => {
+                return VerdictDecision {
+                    status: VerdictStatus::Contradicted,
+                    confidence: 0.85,
+                    evidence_ids: vec![format!("git:branch:{branch}")],
+                    caveats: vec![format!(
+                        "Branch `{branch}` {}.",
+                        if meta.get("branch_exists").and_then(|v| v.as_bool()) == Some(false) {
+                            "does not exist in this repository"
+                        } else {
+                            "does not contain the named commit"
+                        }
+                    )],
+                    suggested_action: Some("Re-check the branch name.".to_string()),
+                    structured: true,
+                };
+            }
+            None => unverifiable.push(format!("branch `{branch}`")),
+        }
+    }
+
+    // Part 4: "the branch is no longer ahead" — ahead-count vs upstream is 0.
+    if asserted.get("ahead_zero").and_then(|v| v.as_bool()) == Some(true) {
+        match meta.get("ahead").and_then(|v| v.as_i64()) {
+            Some(0) => {
+                evidence_ids.push("git:ahead:0".to_string());
+                caveats.push("HEAD is not ahead of its upstream.".to_string());
+            }
+            Some(n) => {
+                return VerdictDecision {
+                    status: VerdictStatus::Contradicted,
+                    confidence: 0.88,
+                    evidence_ids: vec!["git:ahead".to_string()],
+                    caveats: vec![format!(
+                        "HEAD is {n} commit(s) ahead of its upstream — not fully pushed."
+                    )],
+                    suggested_action: Some("Run `git push`.".to_string()),
+                    structured: true,
+                };
+            }
+            None => unverifiable.push("the ahead/behind state (no upstream)".to_string()),
+        }
+    }
+
+    if evidence_ids.is_empty() {
+        return inconclusive(
+            &format!(
+                "Couldn't verify {} from local git state.",
+                if unverifiable.is_empty() {
+                    "this git claim".to_string()
+                } else {
+                    unverifiable.join(", ")
+                }
+            ),
+            None,
+        );
+    }
+    if !unverifiable.is_empty() {
+        caveats.push(format!(
+            "Unverified part(s): {} — treat those as unconfirmed.",
+            unverifiable.join(", ")
+        ));
+    }
+    VerdictDecision {
+        status: VerdictStatus::Supported,
+        confidence: if unverifiable.is_empty() { 0.88 } else { 0.6 },
+        evidence_ids,
+        caveats,
+        suggested_action: None,
         structured: true,
     }
 }

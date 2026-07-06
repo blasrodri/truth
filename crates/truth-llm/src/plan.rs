@@ -97,7 +97,8 @@ pub fn plan_for(
         | ClaimType::OnlyChanged
         | ClaimType::ChangeCount
         | ClaimType::SymbolRenamed
-        | ClaimType::CommandSucceeded => {}
+        | ClaimType::CommandSucceeded
+        | ClaimType::GitState => {}
         ClaimType::Unknown => {}
     }
 

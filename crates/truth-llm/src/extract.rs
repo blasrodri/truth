@@ -92,8 +92,11 @@ fn res() -> &'static Re {
         // NOTE: `field`/`variant`/`const` are intentionally NOT kind-first cues —
         // as plain English words they appear mid-sentence ("field to the struct"
         // → name `to`), so they're recognized name-first only (below).
+        // Spanish kind words included (funcion/método/clase): the user works
+        // bilingually and 6 true Spanish claims were refused in the field
+        // audit ("checkin.go contiene una funcion pairAnswersToQuestions").
         symbol: Regex::new(
-            r"(?i)\b(?:function|func|fn|method|struct|type|class|interface|trait|enum|helper|handler)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?(?:\s*\(\s*\))?",
+            r"(?i)\b(?:function|func|fn|method|struct|type|class|interface|trait|enum|helper|handler|funci[oó]n|m[eé]todo|clase)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?(?:\s*\(\s*\))?",
         )
         .unwrap(),
         // Symbol claim, NAME-first: "validate_token function", "parse_legacy
@@ -127,6 +130,39 @@ impl ClaimExtractor for RegexExtractor {
         if text.contains("://") || has_remote_marker(&lower) {
             return StructuredClaim::unknown(
                 "This claim is about external state (a URL or another machine) — truth only verifies the local repo, diff, and recorded runs.",
+            );
+        }
+
+        // Admissions: "I have NOT verified X", "I did not run the test suite".
+        // The agent is disclosing a gap, not asserting work — there is nothing
+        // to catch, and judging the embedded proposition produced a false
+        // contradiction in the field ("I have not verified the embedded
+        // interpreter can import vllm" → Contradicted citing AGENTS.md). A
+        // negated-scope claim ("I did not change any other files") is a real
+        // future check, but today it wouldn't parse either — refusing is the
+        // status quo for it, and the safe verdict for every admission.
+        if is_admission(&lower) {
+            return StructuredClaim::unknown(
+                "This is an admission of something NOT done — nothing to verify. \
+                 (Admissions are honest by construction; truth only checks positive claims.)",
+            );
+        }
+
+        // Git bookkeeping: "committed as a81b565 and pushed to origin main",
+        // "committed on branch feat/x", "the branch is no longer ahead". All
+        // decidable from the LOCAL object store and remote-tracking refs — 26
+        // such claims were refused in the field audit. Tried early so the sha
+        // or branch token can't be misread as a value/file subject.
+        if let Some((subject, parts)) = git_state_parts(&lower) {
+            return claim(
+                ClaimType::GitState,
+                Some(subject),
+                Some("git_state"),
+                ClaimOperator::Exists,
+                Some(parts),
+                None,
+                None,
+                0.8,
             );
         }
 
@@ -267,16 +303,35 @@ impl ClaimExtractor for RegexExtractor {
             && !has_import_phrase(&lower)
         {
             if let Some(path) = file_subject(text) {
+                // Locative phrasing: in "I added a copiedId state variable IN
+                // index.js" / "tests were added TO test_utils.py", the file is
+                // WHERE the change happened, not WHAT was added — the file's
+                // own diff status may be `modified`. Reading the change verb as
+                // the file's change kind produced the largest false-accusation
+                // class in the field audit ("Claimed added, but the diff shows
+                // `X` was modified"). A locative claim only asserts the file
+                // was touched this turn.
+                let locative = file_is_location(text, &path);
                 let expected = if ["deleted", "removed", "dropped"]
                     .iter()
                     .any(|v| lower.contains(v))
                 {
-                    Some("deleted")
+                    if locative {
+                        // "I removed the helper FROM auth.rs" — auth.rs itself
+                        // survives; only content within it was removed.
+                        Some("touched")
+                    } else {
+                        Some("deleted")
+                    }
                 } else if lower.contains("created")
                     || lower.contains("new file")
                     || lower.contains("added")
                 {
-                    Some("added")
+                    if locative {
+                        Some("touched")
+                    } else {
+                        Some("added")
+                    }
                 } else if [
                     "modified",
                     "edited",
@@ -553,6 +608,24 @@ impl ClaimExtractor for RegexExtractor {
                         .and_then(|c| c.get(1))
                         .filter(identifier_like)
                         .and_then(ok)
+                })
+                .or_else(|| {
+                    // Spanish "contiene <identifier>" with no kind word:
+                    // "checkin_test.go contiene TestTrackCollectedKeys_…".
+                    // The identifier-shape filter keeps plain Spanish words
+                    // ("contiene errores") from becoming symbols.
+                    static CONTIENE: OnceLock<Regex> = OnceLock::new();
+                    CONTIENE
+                        .get_or_init(|| {
+                            Regex::new(
+                                r"(?i)\bcontiene\s+(?:una?\s+|la\s+|el\s+)?`?([A-Za-z_][A-Za-z0-9_]*)`?",
+                            )
+                            .unwrap()
+                        })
+                        .captures(text)
+                        .and_then(|c| c.get(1))
+                        .filter(identifier_like)
+                        .and_then(ok)
                 });
             // Guard against vague prose ("refactored the checkout handler to be
             // cleaner"): only treat this as a checkable symbol claim when there's
@@ -566,6 +639,13 @@ impl ClaimExtractor for RegexExtractor {
                 || lower.contains("dropped")
                 || lower.contains("exist")
                 || lower.contains("defined")
+                // Spanish: contiene/existe/agregué/añadí/eliminé/definida.
+                || lower.contains("contiene")
+                || lower.contains("existe")
+                || lower.contains("agreg")
+                || lower.contains("añad")
+                || lower.contains("elimin")
+                || lower.contains("defini")
                 || lower.contains('`');
             // Test-OUTCOME narrative that merely MENTIONS a backticked symbol is
             // not a symbol-existence claim: "the test script ran successfully …
@@ -612,7 +692,9 @@ impl ClaimExtractor for RegexExtractor {
                         || lower.contains("dropped")
                         || lower.contains("renamed")
                         || lower.contains("no longer")
-                        || lower.contains("gone");
+                        || lower.contains("gone")
+                        || lower.contains("elimin")
+                        || lower.contains("ya no");
                     return StructuredClaim {
                         is_checkable: true,
                         claim_type: ClaimType::SymbolExists,
@@ -770,15 +852,32 @@ fn parse_count(token: &str) -> Option<i64> {
 /// passing test" (about a test file, not the suite) doesn't match. Admissions
 /// of failure are never extracted — there is nothing to catch.
 fn command_kind(lower: &str) -> Option<&'static str> {
+    // Between the command word and the success word, real agent phrasing puts a
+    // scope ("tests FOR VLLM-PARSER pass") or flags/paths ("go build ./...
+    // succeeds", "go test -race ./... passed"). `MID` admits up to three such
+    // tokens — but ONLY preposition-scoped or flag/path-shaped ones, so "the
+    // test that passes garbage" (arbitrary prose between the words) still
+    // doesn't match. Field data: all four shapes above were refused before this.
+    const MID: &str = r"(?:\s+(?:for|in|on|via)\s+\S+|\s+[-./]\S*){0,3}";
     static K: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
     let pats = K.get_or_init(|| {
         vec![
+            // fmt FIRST: "cargo fmt --check passes" would otherwise hit the
+            // test pattern's `checks?` cue and record under the wrong kind.
             (
-                Regex::new(r"\b(?:tests?|test suite|suite|specs?|checks?)\s+(?:are\s+|all\s+|now\s+|still\s+)*(?:pass(?:es|ed|ing)?\b|green\b|succeed)").unwrap(),
+                Regex::new(&format!(r"\b(?:rustfmt|cargo fmt|fmt|format(?:ting)?(?:\s+check)?|prettier){MID}\s+(?:is\s+|are\s+|now\s+|still\s+)*(?:clean|pass(?:es|ed)?|green|unchanged)")).unwrap(),
+                "format",
+            ),
+            (
+                Regex::new(&format!(r"\b(?:clippy|lint(?:er|ing)?|vet|ruff(?:[- ]check)?){MID}\s+(?:is\s+|are\s+|now\s+|still\s+)*(?:clean|pass(?:es|ed)?|green|happy)")).unwrap(),
+                "lint",
+            ),
+            (
+                Regex::new(&format!(r"\b(?:tests?|test suite|suite|specs?|checks?){MID}\s+(?:are\s+|all\s+|now\s+|still\s+)*(?:pass(?:es|ed|ing)?\b|green\b|succeed)")).unwrap(),
                 "test",
             ),
             (
-                Regex::new(r"\b(?:build|compilation)\s+(?:now\s+|still\s+|is\s+)*(?:succeed(?:s|ed)?|pass(?:es|ed)?|compiles|works|green|clean)").unwrap(),
+                Regex::new(&format!(r"\b(?:build|compilation){MID}\s+(?:now\s+|still\s+|is\s+)*(?:succeed(?:s|ed)?|pass(?:es|ed)?|compiles|works|green|clean)")).unwrap(),
                 "build",
             ),
             (
@@ -786,11 +885,7 @@ fn command_kind(lower: &str) -> Option<&'static str> {
                 "build",
             ),
             (
-                Regex::new(r"\b(?:clippy|lint(?:er|ing)?)\s+(?:is\s+|now\s+|still\s+)*(?:clean|pass(?:es|ed)?|green|happy)").unwrap(),
-                "lint",
-            ),
-            (
-                Regex::new(r"\b(?:typecheck(?:ing)?|type[- ]check(?:s|ing)?|tsc)\s+(?:is\s+|now\s+)*(?:pass(?:es|ed)?|clean|green)").unwrap(),
+                Regex::new(&format!(r"\b(?:typecheck(?:ing)?|type[- ]check(?:s|ing)?|tsc){MID}\s+(?:is\s+|now\s+)*(?:pass(?:es|ed)?|clean|green)")).unwrap(),
                 "typecheck",
             ),
         ]
@@ -803,9 +898,38 @@ fn command_kind(lower: &str) -> Option<&'static str> {
         .map(|(_, k)| *k)
 }
 
-/// First file-path token (dot-extension required) in the text.
+/// First file-path token (dot-extension required) in the text. A token
+/// immediately followed by `(` is a METHOD CALL (`changed.keys()`), not a file
+/// — treating it as one contradicted a true claim in the field ("the diff does
+/// not touch `changed.keys`").
 fn file_subject(text: &str) -> Option<String> {
-    res().file_path.captures(text).map(|c| c[1].to_string())
+    res()
+        .file_path
+        .captures_iter(text)
+        .find(|c| {
+            let m = c.get(1).unwrap();
+            !text[m.end()..].starts_with('(')
+        })
+        .map(|c| c[1].to_string())
+}
+
+/// Whether `path`'s first occurrence in `text` is preceded by a locative
+/// preposition ("in", "to", "into", "inside", "within", "under", "from", "at")
+/// — i.e. the file names WHERE a change happened, not WHAT changed.
+fn file_is_location(text: &str, path: &str) -> bool {
+    let Some(pos) = text.find(path) else {
+        return false;
+    };
+    let before = &text[..pos];
+    let prev = before
+        .rsplit(|c: char| c.is_whitespace())
+        .find(|w| !w.is_empty())
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    matches!(
+        prev.to_ascii_lowercase().as_str(),
+        "in" | "to" | "into" | "inside" | "within" | "under" | "from" | "at"
+    )
 }
 
 /// First `backticked` token, if short enough to be a subject.
@@ -877,6 +1001,110 @@ fn has_value_pattern(text: &str, lower: &str) -> bool {
         || r.retry.is_match(lower)
         || r.timeout.is_match(lower)
         || r.port.is_match(lower)
+}
+
+/// Parse the git-state assertions out of a sentence, if any. Returns the
+/// claim subject (sha > branch > push target > HEAD) and the asserted parts as
+/// `{"sha":..,"pushed_to":..,"branch":..,"ahead_zero":..}` — only keys that
+/// were actually asserted are present. `lower` is expected lowercase.
+///
+/// Deliberately strict gates (each part needs its cue word) so ordinary prose
+/// ("Results are pushed in recordsMetadata order") never becomes a git claim.
+fn git_state_parts(lower: &str) -> Option<(String, serde_json::Value)> {
+    static SHA: OnceLock<Regex> = OnceLock::new();
+    static PUSHED_TO: OnceLock<Regex> = OnceLock::new();
+    static BRANCH: OnceLock<Regex> = OnceLock::new();
+    let sha_re = SHA.get_or_init(|| Regex::new(r"\b([0-9a-f]{7,40})\b").unwrap());
+    // Target = at most two tokens after "to" ("origin main", "origin/main",
+    // "the blasrodri fork" → first real token). A trailing conjunction is not
+    // part of the target ("pushed to origin/main AND the branch…").
+    let pushed_re = PUSHED_TO.get_or_init(|| {
+        Regex::new(r"\bpush(?:ed)?\b[^.;]*?\bto\s+(?:the\s+)?([\w./-]+(?:\s+[\w./-]+)?)").unwrap()
+    });
+    let branch_re = BRANCH.get_or_init(|| Regex::new(r"\bbranch\s+([A-Za-z0-9._/-]+)").unwrap());
+
+    let commit_cue = has_word(lower, "committed") || has_word(lower, "commit");
+    let push_cue = has_word(lower, "pushed") || has_word(lower, "push");
+
+    // A sha must carry both a digit and a hex letter — "committed 1234567
+    // rows" must not mine a fake sha and then contradict on it.
+    let sha = if commit_cue {
+        sha_re
+            .captures_iter(lower)
+            .map(|c| c[1].to_string())
+            .find(|s| {
+                s.chars().any(|c| c.is_ascii_digit()) && s.chars().any(|c| c.is_ascii_alphabetic())
+            })
+    } else {
+        None
+    };
+
+    // "pushed to origin main" — capture the target words; bare "and pushed"
+    // (no target) counts only alongside a commit cue.
+    let pushed_to = if push_cue {
+        pushed_re
+            .captures(lower)
+            .map(|c| {
+                let mut toks: Vec<&str> = c[1].split_whitespace().collect();
+                if toks.len() == 2
+                    && matches!(toks[1], "and" | "then" | "but" | "so" | "with" | "after")
+                {
+                    toks.pop();
+                }
+                toks.join(" ")
+            })
+            .or_else(|| commit_cue.then(String::new))
+    } else {
+        None
+    };
+
+    let branch = (commit_cue || push_cue)
+        .then(|| branch_re.captures(lower).map(|c| c[1].to_string()))
+        .flatten()
+        .filter(|b| !is_stopword(b) && b != "is" && b != "was" && b != "and");
+
+    let ahead_zero = lower.contains("no longer ahead")
+        || lower.contains("not ahead")
+        || lower.contains("isn't ahead")
+        || lower.contains("0 commits ahead")
+        || lower.contains("zero commits ahead");
+
+    if sha.is_none() && pushed_to.is_none() && branch.is_none() && !ahead_zero {
+        return None;
+    }
+    let subject = sha
+        .clone()
+        .or_else(|| branch.clone())
+        .or_else(|| pushed_to.clone().filter(|t| !t.is_empty()))
+        .unwrap_or_else(|| "HEAD".to_string());
+    let mut parts = serde_json::Map::new();
+    if let Some(s) = sha {
+        parts.insert("sha".into(), s.into());
+    }
+    if let Some(t) = pushed_to {
+        parts.insert("pushed_to".into(), t.into());
+    }
+    if let Some(b) = branch {
+        parts.insert("branch".into(), b.into());
+    }
+    if ahead_zero {
+        parts.insert("ahead_zero".into(), true.into());
+    }
+    Some((subject, serde_json::Value::Object(parts)))
+}
+
+/// Whether the sentence is a first-person admission of something NOT done
+/// ("I have not verified …", "I did not run …", "we haven't tested …").
+/// `lower` is expected lowercase.
+fn is_admission(lower: &str) -> bool {
+    static A: OnceLock<Regex> = OnceLock::new();
+    let re = A.get_or_init(|| {
+        Regex::new(
+            r"\b(?:i|we)\s+(?:have\s+not|haven't|did\s+not|didn't|do\s+not|don't|never|could\s+not|couldn't|was\s+unable\s+to|were\s+unable\s+to|have\s+not\s+yet)\b",
+        )
+        .unwrap()
+    });
+    re.is_match(lower)
 }
 
 /// Whether the sentence is about another machine/environment rather than the
@@ -1683,10 +1911,89 @@ mod tests {
             ("the build compiles", "build"),
             ("it compiles", "build"),
             ("clippy is clean", "lint"),
+            // Real refused field phrasings (vllm/eywa/healthtrust sessions):
+            // scopes and flags between the command word and the success word.
+            ("cargo test for vllm-parser passes with 360 tests", "test"),
+            ("354 vllm-parser tests pass", "test"),
+            ("go test -race ./... passed with exit 0", "test"),
+            ("go build ./... succeeds", "build"),
+            ("go vet passes", "lint"),
+            ("cargo clippy for vllm-parser is clean", "lint"),
+            ("cargo fmt --check for vllm-parser is clean", "format"),
         ] {
             let c = RegexExtractor.extract(text);
             assert_eq!(c.claim_type, ClaimType::CommandSucceeded, "{text}");
             assert_eq!(c.subject.as_deref(), Some(kind), "{text}");
+        }
+    }
+
+    #[test]
+    fn extracts_spanish_symbol_claims() {
+        // Real refused field claims (eywa sessions, 2026-06-09) — the user
+        // works bilingually and truth was English-only.
+        for (text, subject) in [
+            (
+                "checkin.go contiene una funcion pairAnswersToQuestions",
+                "pairAnswersToQuestions",
+            ),
+            (
+                "checkin.go contiene una función normalizeAnswerForQuestion",
+                "normalizeAnswerForQuestion",
+            ),
+            (
+                "checkin_test.go contiene TestTrackCollectedKeys_RepromptDoesNotSkipQuestions",
+                "TestTrackCollectedKeys_RepromptDoesNotSkipQuestions",
+            ),
+        ] {
+            let c = RegexExtractor.extract(text);
+            assert_eq!(c.claim_type, ClaimType::SymbolExists, "{text}");
+            assert_eq!(c.subject.as_deref(), Some(subject), "{text}");
+            assert_eq!(c.operator, ClaimOperator::Exists, "{text}");
+        }
+        // Plain Spanish prose after "contiene" must not become a symbol.
+        let c = RegexExtractor.extract("el archivo contiene errores de sintaxis");
+        assert_ne!(c.claim_type, ClaimType::SymbolExists, "{:?}", c.subject);
+    }
+
+    #[test]
+    fn extracts_git_state_claims() {
+        // "committed as <sha> and pushed to origin main" (field phrasing).
+        let c = RegexExtractor
+            .extract("The compose changes are committed as a81b565 and pushed to origin main");
+        assert_eq!(c.claim_type, ClaimType::GitState, "{c:?}");
+        let v = c.value.unwrap();
+        assert_eq!(v["sha"], "a81b565");
+        assert_eq!(v["pushed_to"], "origin main");
+
+        // Branch without a sha.
+        let c = RegexExtractor
+            .extract("I committed the change on branch fix/scheduler-transition-state-atomic");
+        assert_eq!(c.claim_type, ClaimType::GitState);
+        assert_eq!(
+            c.value.unwrap()["branch"],
+            "fix/scheduler-transition-state-atomic"
+        );
+
+        // Ahead-zero assertion.
+        let c = RegexExtractor
+            .extract("The commit was pushed to origin/main and the branch is no longer ahead");
+        assert_eq!(c.claim_type, ClaimType::GitState);
+        let v = c.value.unwrap();
+        assert_eq!(v["ahead_zero"], true);
+        assert_eq!(v["pushed_to"], "origin/main");
+    }
+
+    #[test]
+    fn ordinary_prose_is_not_a_git_state_claim() {
+        // Field claim that must NOT become a git claim: "pushed" describing
+        // program behavior, not a git push.
+        let c = RegexExtractor.extract("Results are pushed in recordsMetadata order");
+        assert_ne!(c.claim_type, ClaimType::GitState);
+        // A number is not a sha: "committed 1234567 rows" must not mine a
+        // fake sha and contradict on it.
+        let c = RegexExtractor.extract("the batch committed 1234567 rows");
+        if c.claim_type == ClaimType::GitState {
+            assert!(c.value.as_ref().unwrap().get("sha").is_none(), "{c:?}");
         }
     }
 
@@ -1717,5 +2024,9 @@ mod tests {
         // Admission of failure is not a claim to catch.
         let f = RegexExtractor.extract("tests fail right now");
         assert_ne!(f.claim_type, ClaimType::CommandSucceeded);
+        // Arbitrary prose between command word and success word must not match
+        // (the widened MID tokens admit only scopes/flags/paths).
+        let p = RegexExtractor.extract("the test that passes garbage into the parser was added");
+        assert_ne!(p.claim_type, ClaimType::CommandSucceeded);
     }
 }

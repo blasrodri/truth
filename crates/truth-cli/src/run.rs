@@ -17,7 +17,21 @@ use truth_core::{new_id, now_secs};
 /// must classify as lint, not test.
 pub fn classify_kind(command: &str) -> &'static str {
     let c = command.to_ascii_lowercase();
-    if c.contains("clippy") || c.contains("lint") || c.contains("eslint") || c.contains("ruff") {
+    // git commands are never receipts: `git commit -m "fix tests"` matching the
+    // "test" cue would fabricate a green test receipt out of a commit message.
+    if c.trim_start().starts_with("git ") {
+        return "other";
+    }
+    // fmt before lint/build: `cargo fmt --check` is a format receipt, and
+    // `ruff format` must not classify as lint via the "ruff" cue.
+    if c.contains("fmt") || c.contains("format") || c.contains("prettier") {
+        "format"
+    } else if c.contains("clippy")
+        || c.contains("lint")
+        || c.contains("eslint")
+        || c.contains("ruff")
+        || c.contains(" vet")
+    {
         "lint"
     } else if c.contains("tsc") || c.contains("typecheck") || c.contains("mypy") {
         "typecheck"
@@ -84,7 +98,7 @@ fn digest(bytes: &[u8]) -> String {
 
 /// Last `max_chars` of the output, redacted line by line (emails, tokens,
 /// UUIDs, IPs never reach the store).
-fn redacted_tail(output: &str, max_chars: usize) -> String {
+pub(crate) fn redacted_tail(output: &str, max_chars: usize) -> String {
     let start = output
         .char_indices()
         .rev()
@@ -205,6 +219,10 @@ mod tests {
         assert_eq!(classify_kind("cargo check"), "build");
         assert_eq!(classify_kind("tsc --noEmit"), "typecheck");
         assert_eq!(classify_kind("ls -la"), "other");
+        assert_eq!(classify_kind("cargo fmt --check"), "format");
+        assert_eq!(classify_kind("go vet ./..."), "lint");
+        // A commit message mentioning tests must not fabricate a receipt.
+        assert_eq!(classify_kind("git commit -m \"fix tests\""), "other");
     }
 
     #[test]

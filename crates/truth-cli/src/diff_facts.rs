@@ -182,6 +182,95 @@ pub fn changed_files(repo_dir: &str) -> Vec<FileChange> {
     changes
 }
 
+/// What HEAD knows about a file when the working tree is CLEAN — the fallback
+/// evidence for "I edited/created X" claims made after the work was committed.
+/// Field audit: an entire repo's worth of true claims (healthtrust360) refused
+/// because verify was diff-only and everything was already committed.
+#[derive(Debug, Clone)]
+pub struct HeadFileFact {
+    /// The tracked repo path resolved from the claim subject (suffix match
+    /// first, then substring), if the file exists at HEAD.
+    pub tracked_path: Option<String>,
+    /// Whether that path was changed by the HEAD commit itself.
+    pub in_head_commit: bool,
+    pub head_sha: Option<String>,
+    /// For deletion claims: whether the exact subject path appears in history
+    /// even though it is not tracked now.
+    pub ever_existed: bool,
+}
+
+fn git_lines(repo_dir: &str, args: &[&str]) -> Vec<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .args(args)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Resolve `subject` against a list of repo paths: exact, then suffix, then
+/// substring — so "models.go" finds "internal/gk/models.go" without matching
+/// "models.go.bak" first.
+fn resolve_path<'a>(paths: &'a [String], subject: &str) -> Option<&'a String> {
+    paths
+        .iter()
+        .find(|p| p.as_str() == subject)
+        .or_else(|| {
+            paths
+                .iter()
+                .find(|p| p.ends_with(subject) || subject.ends_with(p.as_str()))
+        })
+        .or_else(|| paths.iter().find(|p| p.contains(subject)))
+}
+
+/// Gather HEAD facts for `subject`. Cheap: three git commands, called only on
+/// a clean tree for file-change claims. `None` when there is no HEAD to
+/// consult (not a git repo, or no commits yet) — "git can't see the file" is
+/// NOT evidence the file doesn't exist, and contradicting on it would be a
+/// false accusation (the precision gate caught exactly that).
+pub fn head_file_fact(repo_dir: &str, subject: &str) -> Option<HeadFileFact> {
+    let head_sha = git_lines(repo_dir, &["rev-parse", "--short", "HEAD"])
+        .into_iter()
+        .next()?;
+    let tracked = git_lines(repo_dir, &["ls-files"]);
+    let tracked_path = resolve_path(&tracked, subject).cloned();
+    let head_changed = git_lines(repo_dir, &["show", "--name-only", "--format=", "HEAD"]);
+    let in_head_commit = tracked_path
+        .as_deref()
+        .map(|p| head_changed.iter().any(|h| h == p))
+        .unwrap_or(false);
+    let ever_existed = tracked_path.is_some()
+        || !git_lines(repo_dir, &["log", "-1", "--format=%h", "--", subject]).is_empty();
+    Some(HeadFileFact {
+        tracked_path,
+        in_head_commit,
+        head_sha: Some(head_sha),
+        ever_existed,
+    })
+}
+
+/// Evidence item for the clean-tree HEAD fallback (`head_file_status`).
+pub fn head_file_item(fact: &HeadFileFact, subject: &str) -> EvidenceItem {
+    diff_evidence_item(
+        "head_file_status",
+        Some(subject.to_string()),
+        json!(fact.tracked_path.is_some()),
+        json!({
+            "file": fact.tracked_path,
+            "in_head_commit": fact.in_head_commit,
+            "head_sha": fact.head_sha,
+            "ever_existed": fact.ever_existed,
+        }),
+    )
+}
+
 /// Evidence item carrying the status of one changed file (`file_status`).
 pub fn file_status_item(change: &FileChange) -> EvidenceItem {
     diff_evidence_item(

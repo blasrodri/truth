@@ -322,6 +322,12 @@ enum HookCommand {
         /// Install in ~/.claude/settings.json instead of the project settings.
         #[arg(long)]
         user: bool,
+        /// Install only the receipt recorders (PostToolUse/PostToolUseFailure),
+        /// skipping the blocking Stop gate. Recommended with --user: receipts
+        /// are pure evidence-gathering, while a blocking gate should be a
+        /// per-repo decision.
+        #[arg(long)]
+        receipts: bool,
     },
     /// The hook entry point Claude Code invokes (reads the event from stdin).
     Claude,
@@ -531,7 +537,7 @@ fn run(command: Command) -> anyhow::Result<()> {
             SettingsCommand::Set { key, value, json } => settings::set(&key, &value, json),
         },
         Command::Hook { cmd } => match cmd {
-            HookCommand::Install { user } => truth_cli::hook::install(user),
+            HookCommand::Install { user, receipts } => truth_cli::hook::install(user, receipts),
             HookCommand::Claude => truth_cli::hook::claude(),
             HookCommand::Auto { mode } => truth_cli::hook::auto(&mode),
         },

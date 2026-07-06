@@ -349,18 +349,41 @@ blocks — because a count can't prove a claim is a lie.
 **Checks (diff claims — what THIS turn changed):** *"I edited/created/deleted
 `src/auth.rs`"* (the diff's file list decides), *"I **only** changed the
 parser"* (catches collateral edits — every changed path must match), *"renamed
-`parse_legacy` to `parse_v2`"* (old name must be gone AND the new one added). An
-empty diff reports **unknown (already committed?)** — never a free pass.
+`parse_legacy` to `parse_v2`"* (old name must be gone AND the new one added).
+When the tree is **clean** (work already committed), file-change claims fall
+back to the HEAD commit: a file that commit touched supports *"I created/edited
+X"*, and a path that exists nowhere in the repo still contradicts it — so a
+committed repo isn't a wall of refusals. Locative phrasing (*"I added a helper
+**in** auth.rs"*) only asserts the file was touched, not that it was newly
+created — the change verb is about the helper, not the file.
 
-**Checks (command receipts):** *"tests pass"*, *"it compiles"*, *"clippy is
-clean"* — verified against runs recorded by `truth run -- cargo test` (or the
-Claude Code hook below). Supported **only** when a matching run exited 0
-**after** your last working-tree edit; a failing receipt contradicts the
-claim; a green-but-stale receipt proves nothing and is refused.
+**Checks (command receipts):** *"tests pass"*, *"go build ./... succeeds"*,
+*"clippy is clean"*, *"cargo fmt --check passes"* — verified against runs
+recorded by `truth run -- cargo test` **or the Claude Code hook** (which now
+records receipts automatically on both success and failure). Scopes and flags
+between the command and the result (*"cargo test **for vllm-parser** passes"*)
+are handled. Supported **only** when a matching run exited 0 **after** your last
+working-tree edit; a failing receipt contradicts the claim; a green-but-stale
+receipt proves nothing and is refused.
+
+**Checks (git state):** *"committed as `a81b565`"*, *"pushed to origin main"*,
+*"on branch `feat/x`"*, *"the branch is no longer ahead"* — decided from the
+local object store and remote-tracking refs (no network). A sha that doesn't
+exist, a branch that doesn't contain it, or an unpushed HEAD contradicts; when
+there are no remote refs to check a push against, it refuses rather than accuse.
+
+**Bilingual extraction:** symbol/existence claims are recognized in Spanish too
+(*"checkin.go contiene una función `pairAnswersToQuestions`"*), not just English.
 
 **Refuses (by design):** action claims with no receipt (*"I ran the tests"* —
-record runs and it becomes checkable), and judgment claims (*"this is cleaner
-/ faster"* — no measurable subject). Refused ≠ confirmed.
+record runs and it becomes checkable), judgment claims (*"this is cleaner
+/ faster"* — no measurable subject), and **admissions** (*"I have **not**
+verified X"*, *"I did **not** run the suite"* — an honest disclosure of a gap,
+nothing to catch). Refused ≠ confirmed. In the JSON output, every claim carries
+one canonical status — `supported` / `contradicted` / `partial` / `refused` —
+and a refused claim adds a `refused_reason` (`not_checkable` vs `inconclusive`)
+so the "why" is explicit without a second status word. Each report is stamped
+with the `engine_version` that produced it.
 
 ## Configuration
 

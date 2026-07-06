@@ -24,9 +24,15 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use truth_core::config::Config;
 
-/// `truth hook install [--user]` — register the Stop + PostToolUse hooks in
+/// `truth hook install [--user] [--receipts]` — register truth's hooks in
 /// Claude Code settings (project `.claude/settings.json` by default).
-pub fn install(user: bool) -> Result<()> {
+///
+/// `--receipts` installs ONLY the receipt recorders (PostToolUse +
+/// PostToolUseFailure on Bash), skipping the Stop fact-check gate. That's the
+/// right global (`--user`) install: receipts are pure evidence-gathering with
+/// no behavior change, while a blocking Stop gate should be a per-repo
+/// decision.
+pub fn install(user: bool, receipts_only: bool) -> Result<()> {
     let path = if user {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -42,11 +48,16 @@ pub fn install(user: bool) -> Result<()> {
         .unwrap_or_else(|| json!({}));
 
     let mut added = Vec::new();
-    if ensure_hook(&mut settings, "Stop", None) {
+    if !receipts_only && ensure_hook(&mut settings, "Stop", None) {
         added.push("Stop");
     }
     if ensure_hook(&mut settings, "PostToolUse", Some("Bash")) {
         added.push("PostToolUse(Bash)");
+    }
+    // Nonzero exits fire a separate event; a red receipt ("tests FAILED") is
+    // exactly what catches a later "tests pass" over-claim.
+    if ensure_hook(&mut settings, "PostToolUseFailure", Some("Bash")) {
+        added.push("PostToolUseFailure(Bash)");
     }
 
     if added.is_empty() {
@@ -62,10 +73,12 @@ pub fn install(user: bool) -> Result<()> {
         added.join(" + "),
         path.display()
     );
-    println!(
-        "- Stop: the agent's final message is fact-checked; contradictions block until fixed."
-    );
-    println!("- PostToolUse(Bash): test/build/lint runs are recorded as receipts for \"tests pass\" claims.");
+    if !receipts_only {
+        println!(
+            "- Stop: the agent's final message is fact-checked; contradictions block until fixed."
+        );
+    }
+    println!("- PostToolUse/PostToolUseFailure(Bash): test/build/lint/fmt runs are recorded as receipts for \"tests pass\" claims.");
     Ok(())
 }
 
@@ -122,7 +135,7 @@ pub fn claude() -> Result<()> {
         .unwrap_or("");
     match name {
         "Stop" => on_stop(&event),
-        "PostToolUse" => on_post_tool_use(&event),
+        "PostToolUse" | "PostToolUseFailure" => on_post_tool_use(&event),
         _ => Ok(()),
     }
 }
@@ -255,9 +268,12 @@ fn on_stop(event: &Value) -> Result<()> {
     Ok(())
 }
 
-/// PostToolUse(Bash) hook: record test/build/lint runs as command receipts.
-/// Only records when the payload carries a real exit code — receipts are never
-/// guessed.
+/// PostToolUse / PostToolUseFailure (Bash) hook: record test/build/lint/fmt
+/// runs as command receipts. The exit code comes from the payload when
+/// present; otherwise the EVENT NAME is itself a deterministic signal from the
+/// harness (PostToolUse fires on exit 0, PostToolUseFailure on nonzero), so we
+/// fall back to it rather than dropping the receipt — field data showed zero
+/// hook receipts ever recorded, partly because payload shapes drifted.
 fn on_post_tool_use(event: &Value) -> Result<()> {
     if event.get("tool_name").and_then(|v| v.as_str()) != Some("Bash") {
         return Ok(());
@@ -272,12 +288,23 @@ fn on_post_tool_use(event: &Value) -> Result<()> {
     if kind == "other" {
         return Ok(());
     }
-    let Some(exit_code) = exit_code_from(event.get("tool_response")) else {
+    let payload_exit = exit_code_from(event.get("tool_response"));
+    let Some(exit_code) = resolve_exit_code(
+        payload_exit,
+        event.get("hook_event_name").and_then(|v| v.as_str()),
+    ) else {
         return Ok(());
     };
     let Some(config) = config_for(event) else {
         return Ok(());
     };
+    // Redacted output tail: lets the verdict spot empty green runs ("0 tests
+    // run") from hook-recorded receipts, same as `truth run` ones.
+    let output_tail = event.get("tool_response").map(|r| {
+        let stdout = r.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+        let stderr = r.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
+        crate::run::redacted_tail(&format!("{stdout}\n{stderr}"), 1200)
+    });
     // Best-effort: a failed insert must not surface into the session.
     let _ = (|| -> Result<()> {
         let conn = truth_db::open(&config.database.path)?;
@@ -293,12 +320,28 @@ fn on_post_tool_use(event: &Value) -> Result<()> {
                 finished_at: now,
                 duration_ms: None,
                 output_digest: None,
-                output_tail: None,
-                metadata_json: json!({ "recorded_by": "claude-code hook" }),
+                output_tail,
+                metadata_json: json!({
+                    "recorded_by": "claude-code hook",
+                    "exit_source": if payload_exit.is_some() { "payload" } else { "event_name" },
+                }),
             },
         )
     })();
     Ok(())
+}
+
+/// The exit code to record: the payload's when present, else inferred from
+/// the event name (the harness routes exit 0 to PostToolUse and nonzero to
+/// PostToolUseFailure — a deterministic signal, not a guess). None → don't
+/// record.
+fn resolve_exit_code(payload_exit: Option<i64>, event_name: Option<&str>) -> Option<i64> {
+    match (payload_exit, event_name) {
+        (Some(code), _) => Some(code),
+        (None, Some("PostToolUse")) => Some(0),
+        (None, Some("PostToolUseFailure")) => Some(1),
+        _ => None,
+    }
 }
 
 /// Find an exit code in the PostToolUse tool_response, across the field names
@@ -361,9 +404,25 @@ mod tests {
             "second install is a no-op"
         );
         assert!(ensure_hook(&mut s, "PostToolUse", Some("Bash")));
+        assert!(ensure_hook(&mut s, "PostToolUseFailure", Some("Bash")));
         // Pre-existing settings survive.
         assert_eq!(s["permissions"]["allow"][0], "Bash(ls:*)");
         assert_eq!(s["hooks"]["PostToolUse"][0]["matcher"], "Bash");
+        assert_eq!(s["hooks"]["PostToolUseFailure"][0]["matcher"], "Bash");
+    }
+
+    #[test]
+    fn exit_code_falls_back_to_event_name() {
+        // Payload exit code always wins.
+        assert_eq!(resolve_exit_code(Some(2), Some("PostToolUse")), Some(2));
+        // No payload code: the event name is a deterministic success/failure
+        // signal from the harness. Field data: zero hook receipts were ever
+        // recorded partly because payload shapes drifted across versions.
+        assert_eq!(resolve_exit_code(None, Some("PostToolUse")), Some(0));
+        assert_eq!(resolve_exit_code(None, Some("PostToolUseFailure")), Some(1));
+        // Unknown event and no code → never guess.
+        assert_eq!(resolve_exit_code(None, Some("SomethingElse")), None);
+        assert_eq!(resolve_exit_code(None, None), None);
     }
 
     #[test]

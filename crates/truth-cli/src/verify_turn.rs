@@ -29,6 +29,61 @@ pub struct ClaimVerdict {
     pub citation: Option<String>,
 }
 
+/// The canonical wire status for a claim — the SAME four-way vocabulary the
+/// summary counts use. Field agents saw one call label an "I edited X" claim
+/// `refused` and an identical one `inconclusive`, then argued about the
+/// difference: the distinction was an accident of two code paths (`!checkable`
+/// vs the engine's `Inconclusive`), not a real semantic split. Both mean "not
+/// decided", so both report as `refused` here; WHY it wasn't decided is carried
+/// separately in `refused_reason`, never as a second top-level status word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireStatus {
+    Supported,
+    Contradicted,
+    Partial,
+    Refused,
+}
+
+impl WireStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WireStatus::Supported => "supported",
+            WireStatus::Contradicted => "contradicted",
+            WireStatus::Partial => "partial",
+            WireStatus::Refused => "refused",
+        }
+    }
+}
+
+impl ClaimVerdict {
+    /// Collapse the internal (checkable, status) pair to the one canonical wire
+    /// status. `Inconclusive` and "not checkable" both surface as `Refused`.
+    pub fn wire_status(&self) -> WireStatus {
+        if !self.checkable {
+            return WireStatus::Refused;
+        }
+        match self.status {
+            VerdictStatus::Supported => WireStatus::Supported,
+            VerdictStatus::Contradicted => WireStatus::Contradicted,
+            VerdictStatus::PartiallySupported => WireStatus::Partial,
+            // Inconclusive and NeedsMoreContext both mean "not decided" → the
+            // agent must treat them as unverified, never as confirmation.
+            VerdictStatus::Inconclusive | VerdictStatus::NeedsMoreContext => WireStatus::Refused,
+        }
+    }
+
+    /// Why a `Refused` claim wasn't decided — so the not-checkable vs
+    /// checked-but-inconclusive nuance survives WITHOUT a second status word.
+    /// `None` for any non-refused verdict.
+    pub fn refused_reason(&self) -> Option<&'static str> {
+        match self.wire_status() {
+            WireStatus::Refused if !self.checkable => Some("not_checkable"),
+            WireStatus::Refused => Some("inconclusive"),
+            _ => None,
+        }
+    }
+}
+
 /// How trustworthy the underlying index is for this verification. A verifier
 /// that silently checks against an empty or stale index can FALSE-PASS, which is
 /// worse than no verifier — so we make the index state explicit in every report.
@@ -83,24 +138,29 @@ pub struct TurnReport {
 }
 
 impl TurnReport {
-    pub fn supported(&self) -> usize {
+    /// Count claims whose canonical wire status is `want`. Deriving every
+    /// summary count from the SAME `wire_status()` the per-claim labels use
+    /// means the buckets and the labels can never disagree — the source of the
+    /// refused/inconclusive confusion in the field.
+    fn count(&self, want: WireStatus) -> usize {
         self.verdicts
             .iter()
-            .filter(|v| v.status == VerdictStatus::Supported)
+            .filter(|v| v.wire_status() == want)
             .count()
+    }
+    pub fn supported(&self) -> usize {
+        self.count(WireStatus::Supported)
     }
     pub fn contradicted(&self) -> usize {
-        self.verdicts
-            .iter()
-            .filter(|v| v.status == VerdictStatus::Contradicted)
-            .count()
+        self.count(WireStatus::Contradicted)
     }
-    /// Refused = anything we couldn't turn into a checkable verdict.
+    /// Refused = every claim we couldn't resolve to a supported/contradicted/
+    /// partial verdict (not checkable OR checked-but-inconclusive alike).
     pub fn refused(&self) -> usize {
-        self.verdicts
-            .iter()
-            .filter(|v| !v.checkable || v.status == VerdictStatus::Inconclusive)
-            .count()
+        self.count(WireStatus::Refused)
+    }
+    pub fn partial(&self) -> usize {
+        self.count(WireStatus::Partial)
     }
 
     /// Did the agent assert something the evidence contradicts?
@@ -127,6 +187,10 @@ impl TurnReport {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "message": self.message,
+            // Which engine produced these verdicts. Field data showed sessions
+            // running a binary several releases behind the repo — without this
+            // stamp, a verdict can't be traced back to the engine that made it.
+            "engine_version": env!("CARGO_PKG_VERSION"),
             "summary": {
                 "supported": self.supported(),
                 "contradicted": self.contradicted(),
@@ -146,9 +210,15 @@ impl TurnReport {
             },
             "claims": self.verdicts.iter().map(|v| serde_json::json!({
                 "text": v.text,
-                "status": if v.checkable { v.status.as_db_str() } else { "refused" },
+                // Canonical four-way status — the SAME vocabulary the summary
+                // counts. `inconclusive` no longer leaks as a separate wire
+                // word next to `refused`; the nuance moves to `refused_reason`.
+                "status": v.wire_status().as_str(),
+                "refused_reason": v.refused_reason(),
                 "checkable": v.checkable,
-                "confidence": v.confidence,
+                // Round to 2 decimals: raw f32→f64 widening serialized as
+                // 0.30000001192092896, which reads as a bug in every report.
+                "confidence": (f64::from(v.confidence) * 100.0).round() / 100.0,
                 "citation": v.citation,
             })).collect::<Vec<_>>(),
         })
@@ -438,42 +508,33 @@ pub fn verify_claims(
     };
 
     // Agent-provided structured claims take precedence (precise, no segmenting);
-    // otherwise fall back to segmenting the raw message ourselves. The PROVENANCE
-    // of each claim decides whether it may contradict (phase 3):
-    //   - agent-supplied claims  → the LLM that wrote the code parsed its own
-    //     sentence; trust it, full verdict power including Contradicted.
-    //   - our own prose-segmentation → the regex extractor's FP surface. A
-    //     contradiction here is trusted ONLY when it rests on a STRUCTURED fact
-    //     (a file present/absent in the diff, an AST symbol, an exact value, a
-    //     command exit code) — `decision.structured`. A contradiction NOT so
-    //     backed (a count, or a verdict on a possibly-mis-extracted subject) is
-    //     downgraded to Inconclusive: that's the false-accusation surface the
-    //     precision gate drives to zero. After phase 2 counts no longer
-    //     contradict at all, so what survives for prose is exactly the sound,
-    //     binary-fact contradictions ("I removed X" but X is still in the diff).
-    let (segments, from_prose): (Vec<String>, bool) = match claims {
-        Some(list) => (
-            list.iter()
-                .map(|c| c.trim().to_string())
-                .filter(|c| !c.is_empty())
-                .collect(),
-            false,
-        ),
-        None => (segment(message), true),
+    // otherwise fall back to segmenting the raw message ourselves.
+    let segments: Vec<String> = match claims {
+        Some(list) => list
+            .iter()
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect(),
+        None => segment(message),
     };
 
     let mut verdicts = Vec::new();
     for seg in segments {
         let outcome = run_check(conn, config, &seg, Trigger::Cli, local_log)?;
         let citation = first_citation(&outcome.evidence);
-        // Prose-provenance gate: a contradiction from our own segmentation holds
-        // only when the verdict engine tagged it `structured` — a binary fact
-        // (diff presence/absence, AST/index symbol or route, exact value, command
-        // exit code). A non-structured contradiction (a count, after phase 2
-        // already downgraded those) is the false-accusation surface and refuses.
-        // The engine decides structured-ness, not a string-sniff here.
-        let status = if from_prose
-            && outcome.decision.status == VerdictStatus::Contradicted
+        // Structured-fact gate (phase 3, made UNCONDITIONAL after the field
+        // audit): a Contradicted verdict holds only when the engine tagged it
+        // `structured` — a binary fact (diff presence/absence, AST/index symbol
+        // or route, exact value, command exit code). This originally applied
+        // only to our own prose-segmentation, on the theory that agent-supplied
+        // claims were "already parsed by the LLM". That was wrong: truth still
+        // RE-PARSES every claim string with its own regex extractor, so the
+        // false-accusation surface is identical — and all 13 field false
+        // contradictions (doc-keyword citations like CHANGELOG.md/README.md/
+        // AGENTS.md against code claims) arrived through the agent-claims path
+        // the gate didn't cover. Provenance affects segmentation only, never
+        // verdict power.
+        let status = if outcome.decision.status == VerdictStatus::Contradicted
             && !outcome.decision.structured
         {
             VerdictStatus::Inconclusive
@@ -504,15 +565,13 @@ pub fn render_text(report: &TurnReport) -> String {
     let mut out = String::new();
     out.push_str("truth verify-turn\n\n");
     for v in &report.verdicts {
-        let (mark, label) = if !v.checkable || v.status == VerdictStatus::Inconclusive {
-            ("—", "Refused".to_string())
-        } else {
-            match v.status {
-                VerdictStatus::Supported => ("✓", "Supported".into()),
-                VerdictStatus::Contradicted => ("✗", "Contradicted".into()),
-                VerdictStatus::PartiallySupported => ("~", "Partial".into()),
-                _ => ("—", "Refused".into()),
-            }
+        // Text table uses the same canonical status as the JSON — one
+        // vocabulary everywhere.
+        let (mark, label) = match v.wire_status() {
+            WireStatus::Supported => ("✓", "Supported"),
+            WireStatus::Contradicted => ("✗", "Contradicted"),
+            WireStatus::Partial => ("~", "Partial"),
+            WireStatus::Refused => ("—", "Refused"),
         };
         let cite = v
             .citation
@@ -822,6 +881,81 @@ mod tests {
             checkable: true,
             citation: None,
         }
+    }
+
+    #[test]
+    fn wire_status_is_consistent_and_maps_inconclusive_to_refused() {
+        // The field bug: an "I edited X" claim came back `inconclusive` in one
+        // call and `refused` in another, and agents argued about the split.
+        // Both a not-checkable claim and a checked-but-inconclusive one must
+        // now surface the SAME wire word `refused`, distinguished only by
+        // `refused_reason`.
+        let not_checkable = ClaimVerdict {
+            text: "I edited X".into(),
+            status: VerdictStatus::Inconclusive, // status irrelevant when !checkable
+            confidence: 0.3,
+            checkable: false,
+            citation: None,
+        };
+        let inconclusive = ClaimVerdict {
+            text: "I edited X".into(),
+            status: VerdictStatus::Inconclusive,
+            confidence: 0.3,
+            checkable: true,
+            citation: None,
+        };
+        assert_eq!(not_checkable.wire_status(), WireStatus::Refused);
+        assert_eq!(inconclusive.wire_status(), WireStatus::Refused);
+        assert_eq!(not_checkable.wire_status(), inconclusive.wire_status());
+        // The nuance survives without a second status word.
+        assert_eq!(not_checkable.refused_reason(), Some("not_checkable"));
+        assert_eq!(inconclusive.refused_reason(), Some("inconclusive"));
+
+        // No claim's per-claim JSON status may ever be a word outside the
+        // summary's vocabulary, and summary counts must equal the per-claim
+        // label counts.
+        let r = report(vec![
+            supported("set MAX_RETRIES to 5"),
+            not_checkable,
+            inconclusive,
+        ]);
+        let j = r.to_json();
+        let mut label_counts = std::collections::HashMap::new();
+        for c in j["claims"].as_array().unwrap() {
+            let s = c["status"].as_str().unwrap();
+            assert!(
+                ["supported", "contradicted", "partial", "refused"].contains(&s),
+                "leaked non-canonical status `{s}`"
+            );
+            *label_counts.entry(s.to_string()).or_insert(0) += 1;
+        }
+        assert_eq!(
+            j["summary"]["refused"].as_u64().unwrap() as i32,
+            label_counts.get("refused").copied().unwrap_or(0),
+            "summary refused count must equal per-claim refused labels"
+        );
+        assert_eq!(
+            j["summary"]["supported"].as_u64().unwrap() as i32,
+            label_counts.get("supported").copied().unwrap_or(0),
+        );
+    }
+
+    #[test]
+    fn json_report_stamps_engine_version_and_rounds_confidence() {
+        let r = report(vec![ClaimVerdict {
+            text: "I set MAX_RETRIES to 5".into(),
+            status: VerdictStatus::Supported,
+            confidence: 0.3f32, // widens to 0.30000001192092896 unrounded
+            checkable: true,
+            citation: None,
+        }]);
+        let j = r.to_json();
+        assert_eq!(
+            j["engine_version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "every verdict must be traceable to the engine that produced it"
+        );
+        assert_eq!(j["claims"][0]["confidence"].as_f64(), Some(0.3));
     }
 
     #[test]

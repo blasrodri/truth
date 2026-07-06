@@ -28,7 +28,7 @@ impl CheckOutcome {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "status": self.decision.status.as_db_str(),
-            "confidence": self.decision.confidence,
+            "confidence": (f64::from(self.decision.confidence) * 100.0).round() / 100.0,
             "summary": self.response_text,
             "claim": self.claim,
             "evidence": self.evidence,
@@ -279,6 +279,28 @@ pub fn run_check(
         }
     }
 
+    // Git-state evidence: "committed as <sha>" / "pushed to origin main" /
+    // "on branch X" / "no longer ahead" — read from the local object store and
+    // remote-tracking refs, no network.
+    if claim.claim_type == truth_core::claim::ClaimType::GitState {
+        if let Some(asserted) = claim.value.as_ref() {
+            if let Some((item, lines)) = crate::git_facts::gather(&config.repo.root, asserted) {
+                for line in &lines {
+                    evidence_json.push(EvidenceJson {
+                        source: "git".into(),
+                        kind: "git_state".into(),
+                        subject: claim.subject.clone(),
+                        value: None,
+                        unit: None,
+                        citation: Some(line.clone()),
+                    });
+                }
+                evidence_lines.extend(lines);
+                repo_items.push(item);
+            }
+        }
+    }
+
     // Whether ANY manifest dependency was indexed. Lets the verdict engine tell
     // "this package isn't a dependency" apart from "no manifest was parsed"
     // (a stale/partial index must not false-contradict a real dependency).
@@ -395,6 +417,39 @@ fn gather_diff_claim_evidence(
         ClaimType::FileChanged | ClaimType::OnlyChanged => {
             let changes = crate::diff_facts::changed_files(&config.repo.root);
             if changes.is_empty() {
+                // Clean tree — the work may already be committed. Fall back to
+                // what HEAD knows about the file so a committed edit isn't a
+                // blanket refusal (field audit: a whole repo of true claims
+                // refused this way) and a file that never existed can still
+                // contradict "I created X".
+                if claim.claim_type == ClaimType::FileChanged {
+                    if let Some((subject, fact)) = claim.subject.as_deref().and_then(|s| {
+                        crate::diff_facts::head_file_fact(&config.repo.root, s).map(|f| (s, f))
+                    }) {
+                        evidence_lines.push(match (&fact.tracked_path, fact.in_head_commit) {
+                            (Some(p), true) => format!(
+                                "git: clean tree — `{p}` was changed in the HEAD commit{}",
+                                fact.head_sha
+                                    .as_deref()
+                                    .map(|s| format!(" ({s})"))
+                                    .unwrap_or_default()
+                            ),
+                            (Some(p), false) => {
+                                format!("git: clean tree — `{p}` exists at HEAD (not part of the last commit)")
+                            }
+                            (None, _) => format!("git: `{subject}` is not tracked in the repo"),
+                        });
+                        evidence_json.push(EvidenceJson {
+                            source: "git".into(),
+                            kind: "head_file_status".into(),
+                            subject: Some(subject.to_string()),
+                            value: Some(fact.tracked_path.is_some().into()),
+                            unit: None,
+                            citation: fact.tracked_path.clone(),
+                        });
+                        repo_items.push(crate::diff_facts::head_file_item(&fact, subject));
+                    }
+                }
                 return Ok(());
             }
             if let Some(subject) = claim.subject.as_deref() {
