@@ -1,0 +1,105 @@
+84 trajectories mapped to a repo+commit; replaying
+  AnalogJ__lexicon-336: +11 -3 ?36
+  Azure__azure-functions-python-worker-890: +3 -0 ?27
+  PyCQA__pyflakes-761: +9 -0 ?63
+  RDFLib__rdflib-1130: +0 -0 ?6
+  ShawHahnLab__igseq-2: +14 -0 ?42
+  TACC__agavepy-62: +0 -2 ?18
+  TheFriendlyCoder__pyjen-113: +6 -0 ?42
+  absent1706__sqlalchemy-mixins-108: +5 -4 ?50
+  ahawker__ulid-59: +2 -0 ?91
+  airspeed-velocity__asv-702: +7 -0 ?66
+  asottile__pyupgrade-142: +0 -0 ?25
+  asottile__pyupgrade-147: +4 -0 ?40
+  asottile__pyupgrade-347: +1 -1 ?22
+  asottile__pyupgrade-545: +17 -0 ?64
+  asottile__pyupgrade-890: +1 -0 ?9
+  auth0__auth0-python-477: +6 -1 ?41
+  aws-cloudformation__cloudformation-cli-python-plugin-236: +0 -2 ?15
+  benjamincorcoran__sasdocs-41: +0 -3 ?27
+  casbin__pycasbin-53: +0 -4 ?58
+  cytomining__pycytominer-62: +4 -3 ?43
+  dask__dask-jobqueue-563: +14 -0 ?61
+  delph-in__pydelphin-362: +12 -5 ?59
+  fairlearn__fairlearn-896: +11 -0 ?39
+  google__latexify_py-67: +9 -3 ?42
+  google__mobly-472: +1 -0 ?29
+  hugovk__pypistats-41: +1 -0 ?76
+  iris-hep__func_adl-116: +24 -1 ?41
+  iterative__dvc-3462: +0 -0 ?2
+  iterative__dvc-5785: +5 -0 ?39
+  iterative__dvc-6303: +7 -0 ?67
+  iterative__dvc-7205: +6 -0 ?39
+  just-work__fffw-100: +7 -0 ?48
+  matchms__matchms-187: +2 -0 ?49
+  meerk40t__svgelements-183: +5 -3 ?42
+  nipy__nipype-2597: +0 -1 ?48
+  nose-devs__nose2-472: +1 -0 ?39
+  oasis-open__cti-python-stix2-74: +12 -1 ?64
+  omni-us__jsonargparse-176: +17 -0 ?40
+  pact-foundation__pact-python-94: +15 -0 ?48
+  peterbe__premailer-218: +4 -1 ?13
+  planetlabs__planet-client-python-621: +11 -2 ?78
+  pre-commit__pre-commit-1707: +9 -0 ?35
+  pydantic__pydantic-1989: +0 -3 ?49
+  pydantic__pydantic-4350: +8 -0 ?98
+  reata__sqllineage-17: +3 -0 ?39
+  robotpy__robotpy-cppheaderparser-28: +1 -0 ?35
+  santoshphilip__eppy-286: +1 -5 ?53
+  scikit-hep__cabinetry-396: +11 -5 ?41
+  scrapy__itemadapter-18: +9 -0 ?29
+  serge-sans-paille__beniget-70: +14 -4 ?56
+  serge-sans-paille__gast-59: +13 -0 ?47
+  tobymao__sqlglot-2582: +21 -2 ?52
+  tobymao__sqlglot-2591: +2 -5 ?73
+  Backblaze__B2_Command_Line_Tool-180: +1 -0 ?67
+  DCC-Lab__RayTracing-196: +5 -0 ?40
+  DCC-Lab__RayTracing-273: +12 -0 ?26
+  J-CPelletier__webcomix-7: +1 -1 ?31
+  PyCQA__pyflakes-729: +9 -2 ?48
+  Shoobx__mypy-zope-88: +0 -0 ?30
+  ameily__cincoconfig-40: +14 -0 ?56
+  andialbrecht__sqlparse-445: +7 -3 ?44
+  asottile__pyupgrade-208: +9 -2 ?44
+  astarte-platform__astarte-device-sdk-python-98: +2 -0 ?7
+  auth0__auth0-python-500: +4 -1 ?49
+  betodealmeida__shillelagh-340: +2 -1 ?69
+  canonical__charmcraft-403: +9 -1 ?37
+  canonical__charmcraft-530: +5 -2 ?34
+  cekit__cekit-510: +3 -1 ?37
+  cookiecutter__cookiecutter-839: +0 -0 ?29
+  dandi__dandi-cli-59: +1 -2 ?75
+  datosgobar__pydatajson-212: +1 -1 ?55
+  docker__docker-py-822: +27 -0 ?68
+  eWaterCycle__grpc4bmi-133: +0 -4 ?82
+  ebroecker__canmatrix-470: +0 -0 ?42
+  facelessuser__pymdown-extensions-2039: +5 -2 ?48
+  fair-workflows__nanopub-140: +8 -0 ?44
+  fatiando__pooch-171: +1 -2 ?10
+  glotzerlab__signac-323: +15 -0 ?58
+  iterative__dvc-2424: +0 -2 ?6
+  iterative__dvc-3349: +3 -2 ?61
+  iterative__dvc-3534: +1 -1 ?33
+  iterative__dvc-3726: +20 -0 ?34
+  iterative__dvc-8129: +18 -0 ?49
+  iterative__dvc-8425: +0 -0 ?76
+============================================================
+Engine replay — truth's verdict engine on real agent prose
+============================================================
+instances replayed     84  (clone failures: 0)
+claims supported       529
+claims CONTRADICTED    94
+claims refused         3744
+
+  ✗ [AnalogJ__lexicon-336] The error indicates that the `Config` class is not being imported correctly
+  ✗ [AnalogJ__lexicon-336] The issue might be with how the `Config` class is being imported or it could be 
+  ✗ [AnalogJ__lexicon-336] that the `Config` class is defined correctly
+  ✗ [TACC__agavepy-62] We'll use the `json` library to handle the formatting
+  ✗ [TACC__agavepy-62] The `current_config.json` file has been created with sample configuration data
+  ✗ [absent1706__sqlalchemy-mixins-108] We'll create a new file called `reproduce.py`
+  ✗ [absent1706__sqlalchemy-mixins-108] we should look into the `sqlalchemy_mixins` package to see how it handles the SQ
+  ✗ [absent1706__sqlalchemy-mixins-108] it seems that the `sqlalchemy_mixins` package uses a base class `Base` that inhe
+  ✗ [absent1706__sqlalchemy-mixins-108] The `reproduce.py` file has been updated to inherit `MyClass` from `Base`
+  ✗ [asottile__pyupgrade-347] The reproduce.py file has been successfully removed
+
+wrote contradicted claims to replay_hits.jsonl

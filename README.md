@@ -436,14 +436,29 @@ number below reproduces with `truth eval` / `scripts/precision_gate.sh`:
 | `extractor_corpus.yaml` | 42 | 42 | the same facts phrased many ways (incl. hard prose), across value/route/symbol/dep claims |
 | `basic.yaml` + `claims.yaml` | 7 | 7 | end-to-end verdicts and claim-file format |
 | `precision/*` (gate) | 55 | 55 | **false-contradiction gate**: real SWE-bench over-claims + known-FP prose, all must `Inconclusive` — 0 may flip to `Contradicted` |
+| `field_fp_corpus.rs` | 8 | 8 | every false-contradiction `truth` ever issued in real agent sessions — all must NOT contradict |
+| `recall_corpus.rs` (gate) | 3 | 3 | **catch gate**: real SWE-bench file-op over-claims (agent claimed a file it never touched) — all must `Contradicted` |
 
 The number that matters most for a verifier is asymmetric: **0 false
 contradictions**. The precision corpus is built from *real* agent over-claims
 (SWE-bench, auto-labeled against each agent's actual patch) plus every prose
-pattern that has ever false-accused `truth` on its own repo; CI fails the build
-if any of them flips to `Contradicted`. Recall (catching real lies) is reported
-but deliberately **not** gated — a verifier earns trust by never crying wolf
-first. `truth stats --review` is the live counterpart: it re-runs past
+pattern that has ever false-accused `truth` on its own repo — and every
+contradiction `truth` has ever issued across ~15 real repos of the author's own
+agent sessions (`field_fp_corpus.rs`); CI fails the build if any flips to
+`Contradicted`.
+
+**Recall, measured (the catch side).** Replaying **84 real SWE-bench
+trajectories where the coding agent claimed success on a task it actually
+failed** (`benchmarks/swe_overclaim`, agent patch applied to the real tree,
+each concrete claim verified): `truth` **caught a file-operation over-claim in
+17% of the failed tasks with 0 false accusations** — the agent said it
+created/removed/edited a file its own patch never touched (e.g. claimed
+`current_config.json` was created when the patch made `new_config.json`).
+That's a floor, not a ceiling: it counts only file-op lies, the class `truth`
+resolves against a hard diff fact; the distilled catches are now a **gated**
+regression corpus (`recall_corpus.rs`) so a "fix" can't silently blind the
+catcher. Recall on softer claim classes (symbol/relationship) is the open
+frontier — see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). `truth stats --review` is the live counterpart: it re-runs past
 contradictions through the current engine and flags any that no longer fire,
 self-auditing the lie ledger for false positives an engine fix has retired. Full
 table (claim types, languages, FP/FN behavior) and reproduction:
