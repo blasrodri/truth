@@ -251,19 +251,27 @@ fn on_stop(event: &Value) -> Result<()> {
     })();
     let Ok(report) = report else { return Ok(()) };
 
-    if report.has_contradiction() {
+    // Block on a real contradiction OR an unproven success claim. The latter
+    // is the "tests pass" leak: the agent asserted a green run without a
+    // receipt, and truth's job is to DEMAND the proof — send it back to run the
+    // command rather than let an untested "it passes" reach the user.
+    if report.has_contradiction() || report.has_unproven() {
         let table = crate::verify_turn::render_text(&report);
-        println!(
-            "{}",
-            json!({
-                "decision": "block",
-                "reason": format!(
-                    "truth fact-checked your message against the repo, the working-tree \
-                     diff, and recorded runs — it contradicts the evidence:\n\n{table}\n\n\
-                     Fix the code or correct the contradicted claims, then finish."
-                ),
-            })
-        );
+        let reason = if report.has_contradiction() {
+            format!(
+                "truth fact-checked your message against the repo, the working-tree \
+                 diff, and recorded runs — it contradicts the evidence:\n\n{table}\n\n\
+                 Fix the code or correct the contradicted claims, then finish."
+            )
+        } else {
+            format!(
+                "truth fact-checked your message: you claimed a command succeeded \
+                 (tests/build/lint) without a recorded run to prove it:\n\n{table}\n\n\
+                 Run it through `truth run -- <cmd>` so the receipt exists, then finish. \
+                 truth will not confirm an unproven \"it passes\"."
+            )
+        };
+        println!("{}", json!({ "decision": "block", "reason": reason }));
     }
     Ok(())
 }

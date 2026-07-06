@@ -95,6 +95,7 @@ mod tests {
             caveats: vec!["This only checks the configured Loki source.".into()],
             suggested_action: None,
             structured: true,
+            unproven: false,
         };
         let out = render(&ResponseInput {
             claim_text: "Nobody uses /v1/checkout anymore.",

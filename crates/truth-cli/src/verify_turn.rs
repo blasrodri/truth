@@ -27,6 +27,10 @@ pub struct ClaimVerdict {
     /// Whether the claim was checkable at all (false → refused/unverifiable).
     pub checkable: bool,
     pub citation: Option<String>,
+    /// Checkable in principle, but the agent withheld the evidence ("tests
+    /// pass" with no recorded run). Distinct from refused — truth DEMANDS the
+    /// proof and blocks rather than shrugging.
+    pub unproven: bool,
 }
 
 /// The canonical wire status for a claim — the SAME four-way vocabulary the
@@ -41,6 +45,10 @@ pub enum WireStatus {
     Supported,
     Contradicted,
     Partial,
+    /// Checkable in principle, but the agent didn't supply the evidence
+    /// ("tests pass" with no recorded run). Not `refused` — the agent CAN
+    /// prove it. Surfaced loudly and blocks the Stop hook.
+    Unproven,
     Refused,
 }
 
@@ -50,15 +58,20 @@ impl WireStatus {
             WireStatus::Supported => "supported",
             WireStatus::Contradicted => "contradicted",
             WireStatus::Partial => "partial",
+            WireStatus::Unproven => "unproven",
             WireStatus::Refused => "refused",
         }
     }
 }
 
 impl ClaimVerdict {
-    /// Collapse the internal (checkable, status) pair to the one canonical wire
-    /// status. `Inconclusive` and "not checkable" both surface as `Refused`.
+    /// Collapse the internal (checkable, status, unproven) triple to the one
+    /// canonical wire status. `Inconclusive` and "not checkable" surface as
+    /// `Refused`, EXCEPT an unproven-flagged claim, which is `Unproven`.
     pub fn wire_status(&self) -> WireStatus {
+        if self.unproven {
+            return WireStatus::Unproven;
+        }
         if !self.checkable {
             return WireStatus::Refused;
         }
@@ -162,10 +175,21 @@ impl TurnReport {
     pub fn partial(&self) -> usize {
         self.count(WireStatus::Partial)
     }
+    /// Claims the agent asserted but didn't prove ("tests pass", no receipt).
+    pub fn unproven(&self) -> usize {
+        self.count(WireStatus::Unproven)
+    }
 
     /// Did the agent assert something the evidence contradicts?
     pub fn has_contradiction(&self) -> bool {
         self.contradicted() > 0
+    }
+
+    /// Did the agent make a checkable success claim without supplying the
+    /// evidence? These block the Stop hook just like a contradiction — the
+    /// agent must run the command and prove it, not assert it.
+    pub fn has_unproven(&self) -> bool {
+        self.unproven() > 0
     }
 
     /// The "wall of refusals" evasion (threat model #1): the single most
@@ -194,9 +218,13 @@ impl TurnReport {
             "summary": {
                 "supported": self.supported(),
                 "contradicted": self.contradicted(),
+                "unproven": self.unproven(),
                 "refused": self.refused(),
                 "claims": self.verdicts.len(),
                 "all_refused": self.is_wall_of_refusals(),
+                // Set when a checkable success claim lacks its proof — the agent
+                // must run the command and re-verify. The Stop hook blocks on it.
+                "needs_proof": self.has_unproven(),
             },
             "index": {
                 "repo": self.freshness.repo,
@@ -547,6 +575,7 @@ pub fn verify_claims(
             confidence: outcome.decision.confidence,
             checkable: outcome.claim.is_checkable,
             citation,
+            unproven: outcome.decision.unproven,
         });
     }
     Ok(TurnReport {
@@ -571,6 +600,7 @@ pub fn render_text(report: &TurnReport) -> String {
             WireStatus::Supported => ("✓", "Supported"),
             WireStatus::Contradicted => ("✗", "Contradicted"),
             WireStatus::Partial => ("~", "Partial"),
+            WireStatus::Unproven => ("!", "Unproven"),
             WireStatus::Refused => ("—", "Refused"),
         };
         let cite = v
@@ -581,13 +611,23 @@ pub fn render_text(report: &TurnReport) -> String {
         out.push_str(&format!("  {mark} {label:<13} {}{cite}\n", v.text));
     }
     out.push_str(&format!(
-        "\n  {} supported · {} contradicted · {} refused\n",
+        "\n  {} supported · {} contradicted · {} unproven · {} refused\n",
         report.supported(),
         report.contradicted(),
+        report.unproven(),
         report.refused()
     ));
     if report.has_contradiction() {
         out.push_str("\n  ⚠ The agent's message contradicts the evidence above.\n");
+    }
+    // Unproven success claims: the agent asserted a green run without proof.
+    // Not a lie, but not accepted either — truth demands the receipt.
+    if report.has_unproven() {
+        out.push_str(
+            "\n  ! You claimed a command succeeded without a recorded run. \
+             Run it through `truth run -- <cmd>` and re-verify — truth won't confirm \
+             an unproven \"it passes\".\n",
+        );
     }
     // Wall-of-refusals signal: nothing the agent claimed was checkable. Not a
     // contradiction (so it doesn't block), but worth surfacing — staying vague
@@ -871,6 +911,7 @@ mod tests {
             confidence: 0.0,
             checkable: false,
             citation: None,
+            unproven: false,
         }
     }
     fn supported(text: &str) -> ClaimVerdict {
@@ -880,7 +921,50 @@ mod tests {
             confidence: 0.9,
             checkable: true,
             citation: None,
+            unproven: false,
         }
+    }
+    fn unproven_claim(text: &str) -> ClaimVerdict {
+        ClaimVerdict {
+            text: text.into(),
+            status: VerdictStatus::Inconclusive,
+            confidence: 0.3,
+            checkable: true,
+            citation: None,
+            unproven: true,
+        }
+    }
+
+    #[test]
+    fn unproven_command_claim_is_its_own_status_and_blocks() {
+        // "tests pass" with no receipt is UNPROVEN, not refused: checkable in
+        // principle, evidence withheld. It gets its own wire word, counts
+        // separately, and trips the block signal — the agent must go prove it.
+        let v = unproven_claim("tests pass");
+        assert_eq!(v.wire_status(), WireStatus::Unproven);
+        assert_eq!(v.wire_status().as_str(), "unproven");
+        // Not counted as refused/supported/contradicted.
+        assert!(v.refused_reason().is_none());
+
+        let r = report(vec![
+            supported("I added the /v1/refund route"),
+            unproven_claim("tests pass"),
+        ]);
+        assert_eq!(r.unproven(), 1);
+        assert_eq!(r.refused(), 0);
+        assert!(r.has_unproven(), "an unproven success claim must block");
+        assert!(!r.has_contradiction());
+        // JSON surfaces it distinctly and flags needs_proof.
+        let j = r.to_json();
+        assert_eq!(j["summary"]["unproven"].as_u64(), Some(1));
+        assert_eq!(j["summary"]["needs_proof"].as_bool(), Some(true));
+        assert!(j["claims"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["status"] == "unproven"));
+        // Text render demands the receipt.
+        assert!(render_text(&r).contains("truth run"));
     }
 
     #[test]
@@ -896,6 +980,7 @@ mod tests {
             confidence: 0.3,
             checkable: false,
             citation: None,
+            unproven: false,
         };
         let inconclusive = ClaimVerdict {
             text: "I edited X".into(),
@@ -903,6 +988,7 @@ mod tests {
             confidence: 0.3,
             checkable: true,
             citation: None,
+            unproven: false,
         };
         assert_eq!(not_checkable.wire_status(), WireStatus::Refused);
         assert_eq!(inconclusive.wire_status(), WireStatus::Refused);
@@ -948,6 +1034,7 @@ mod tests {
             confidence: 0.3f32, // widens to 0.30000001192092896 unrounded
             checkable: true,
             citation: None,
+            unproven: false,
         }]);
         let j = r.to_json();
         assert_eq!(

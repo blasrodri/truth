@@ -23,6 +23,15 @@ pub struct VerdictDecision {
     /// count-based or unproven contradictions are downgraded. Meaningless for
     /// non-Contradicted statuses (left true by default); count paths set false.
     pub structured: bool,
+    /// Whether this is an UNPROVEN claim: checkable IN PRINCIPLE, but the agent
+    /// withheld the evidence truth needs — e.g. "tests pass" with no recorded
+    /// run. This is NOT `refused` (genuinely unverifiable, like "this is
+    /// cleaner"): the agent CAN prove it and simply hasn't. truth's job is to
+    /// DEMAND the proof, not to run the command itself — so an unproven claim
+    /// is surfaced loudly and blocks the Stop hook, sending the agent back to
+    /// `truth run -- <cmd>`. Set only on Inconclusive command-receipt-missing
+    /// verdicts; false everywhere else.
+    pub unproven: bool,
 }
 
 impl Default for VerdictDecision {
@@ -34,6 +43,7 @@ impl Default for VerdictDecision {
             caveats: Vec::new(),
             suggested_action: None,
             structured: true,
+            unproven: false,
         }
     }
 }
@@ -254,6 +264,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                     )],
                     suggested_action: None,
                     structured: true,
+                    unproven: false,
                 },
                 (true, true) => VerdictDecision {
                     status: VerdictStatus::Contradicted,
@@ -262,6 +273,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                     caveats: vec![format!("`{subject}` is still declared as a dependency.")],
                     suggested_action: Some("It is still a dependency; re-check the change.".into()),
                     structured: true,
+                    unproven: false,
                 },
                 (false, true) => VerdictDecision {
                     status: VerdictStatus::Supported,
@@ -270,6 +282,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                     caveats: vec![format!("`{subject}` is not declared as a dependency.")],
                     suggested_action: None,
                     structured: true,
+                    unproven: false,
                 },
                 (false, false) => {
                     // Absence only contradicts when the index actually HAS
@@ -287,6 +300,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                             )],
                             suggested_action: None,
                             structured: true,
+                            unproven: false,
                         }
                     } else {
                         VerdictDecision {
@@ -300,6 +314,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                                 "Re-index to check dependency claims.".into(),
                             ),
                             structured: true,
+                            unproven: false,
                         }
                     }
                 }
@@ -360,6 +375,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
             caveats: vec![referenced],
             suggested_action: None,
             structured: true,
+            unproven: false,
         };
     }
     // Positive "X is used" claim with a definitive zero-reference code signal:
@@ -398,6 +414,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
             ],
             suggested_action: None,
             structured: true,
+            unproven: false,
         };
     }
 
@@ -439,6 +456,7 @@ fn decide_usage(input: &VerdictInput) -> VerdictDecision {
                 caveats,
                 suggested_action: None,
                 structured: true,
+                unproven: false,
             };
         }
     }
@@ -484,6 +502,7 @@ fn decide_error(input: &VerdictInput) -> VerdictDecision {
             caveats,
             suggested_action: None,
             structured: true,
+            unproven: false,
         }
     }
 }
@@ -503,6 +522,7 @@ fn decide_latest(input: &VerdictInput) -> VerdictDecision {
             caveats: usage_caveats(input),
             suggested_action: None,
             structured: true,
+            unproven: false,
         },
         None => inconclusive("No occurrence found in the configured window.", None),
     }
@@ -536,6 +556,7 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
             caveats: vec!["Based on static repo contents at index time.".to_string()],
             suggested_action: None,
             structured: true,
+            unproven: false,
         },
         // "I removed it" but it is still there → Contradicted (caught the lie).
         (true, true) => VerdictDecision {
@@ -547,6 +568,7 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
                 "Claimed removed/absent, but it is still defined. Re-check the change.".to_string(),
             ),
             structured: true,
+            unproven: false,
         },
         // "I removed it" and it is gone → Supported.
         (false, true) => VerdictDecision {
@@ -556,6 +578,7 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
             caveats: vec!["Absent from the indexed repo at index time.".to_string()],
             suggested_action: None,
             structured: true,
+            unproven: false,
         },
         // Claimed present but not found. If the DIFF positively shows it was
         // removed this turn, that's a contradiction of "still registered" — we
@@ -574,6 +597,7 @@ fn decide_existence(input: &VerdictInput) -> VerdictDecision {
                             .to_string(),
                     ),
                     structured: true,
+                    unproven: false,
                 }
             } else {
                 inconclusive(
@@ -642,6 +666,7 @@ fn decide_symbol(input: &VerdictInput) -> VerdictDecision {
             caveats: vec![format!("`{subject}` is still present in the code.")],
             suggested_action: Some("Claimed removed, but it is still defined.".to_string()),
             structured: true,
+            unproven: false,
         },
         // "I removed X" and it is gone → Supported.
         (false, true) => supported_symbol(subject, "is absent from the code"),
@@ -655,6 +680,7 @@ fn decide_symbol(input: &VerdictInput) -> VerdictDecision {
             )],
             suggested_action: Some("Claimed present, but it could not be found.".to_string()),
             structured: true,
+            unproven: false,
         },
     }
 }
@@ -667,6 +693,7 @@ fn supported_symbol(subject: &str, why: &str) -> VerdictDecision {
         caveats: vec![format!("`{subject}` {why}.")],
         suggested_action: None,
         structured: true,
+        unproven: false,
     }
 }
 
@@ -711,6 +738,7 @@ fn decide_value(input: &VerdictInput) -> VerdictDecision {
                     caveats: vec!["Compared against the indexed source definition.".to_string()],
                     suggested_action: None,
                     structured: true,
+                    unproven: false,
                 }
             } else {
                 VerdictDecision {
@@ -720,6 +748,7 @@ fn decide_value(input: &VerdictInput) -> VerdictDecision {
                     caveats: vec![format!("Claim says {exp} but the source defines {def}.")],
                     suggested_action: Some("Update the claim or the source to match.".to_string()),
                     structured: true,
+                    unproven: false,
                 }
             }
         }
@@ -737,6 +766,7 @@ fn decide_value(input: &VerdictInput) -> VerdictDecision {
                 "Restate with the specific value, e.g. \"retry count is 3\".".to_string(),
             ),
             structured: true,
+            unproven: false,
         },
         _ => inconclusive(
             "I could not find a source definition for this value in the indexed repo.",
@@ -798,6 +828,7 @@ fn decide_file_changed(input: &VerdictInput) -> VerdictDecision {
                     caveats: vec!["Based on the working-tree git diff vs HEAD.".to_string()],
                     suggested_action: None,
                     structured: true,
+                    unproven: false,
                 }
             } else {
                 VerdictDecision {
@@ -809,6 +840,7 @@ fn decide_file_changed(input: &VerdictInput) -> VerdictDecision {
                     )],
                     suggested_action: Some("Re-check what actually changed.".to_string()),
                     structured: true,
+                    unproven: false,
                 }
             }
         }
@@ -823,6 +855,7 @@ fn decide_file_changed(input: &VerdictInput) -> VerdictDecision {
                 "Claimed a change to this file, but the diff doesn't include it.".to_string(),
             ),
             structured: true,
+            unproven: false,
         },
         None => decide_file_changed_at_head(input, subject, expected),
     }
@@ -883,6 +916,7 @@ fn decide_file_changed_at_head(
                 )],
                 suggested_action: Some("Re-check whether the deletion happened.".to_string()),
                 structured: true,
+                unproven: false,
             }
         } else if ever_existed {
             VerdictDecision {
@@ -894,6 +928,7 @@ fn decide_file_changed_at_head(
                 )],
                 suggested_action: None,
                 structured: true,
+                unproven: false,
             }
         } else {
             inconclusive(
@@ -914,6 +949,7 @@ fn decide_file_changed_at_head(
             )],
             suggested_action: Some("Re-check the path — the file isn't there.".to_string()),
             structured: true,
+            unproven: false,
         };
     }
     if in_head {
@@ -926,6 +962,7 @@ fn decide_file_changed_at_head(
             )],
             suggested_action: None,
             structured: true,
+            unproven: false,
         };
     }
     inconclusive(
@@ -983,6 +1020,7 @@ fn decide_only_changed(input: &VerdictInput) -> VerdictDecision {
             )],
             suggested_action: Some("Re-check what actually changed.".to_string()),
             structured: true,
+            unproven: false,
         };
     }
     if offenders.is_empty() {
@@ -996,6 +1034,7 @@ fn decide_only_changed(input: &VerdictInput) -> VerdictDecision {
             )],
             suggested_action: None,
             structured: true,
+            unproven: false,
         };
     }
     let shown: Vec<&str> = offenders.iter().take(3).map(|s| s.as_str()).collect();
@@ -1013,6 +1052,7 @@ fn decide_only_changed(input: &VerdictInput) -> VerdictDecision {
             "Other files were changed too; mention them or revert them.".to_string(),
         ),
         structured: true,
+        unproven: false,
     }
 }
 
@@ -1029,6 +1069,7 @@ fn decide_change_count(input: &VerdictInput) -> VerdictDecision {
             caveats: vec!["The claim did not state a count to compare against.".to_string()],
             suggested_action: None,
             structured: true,
+            unproven: false,
         };
     };
     let item = input
@@ -1071,6 +1112,7 @@ fn decide_change_count(input: &VerdictInput) -> VerdictDecision {
             ],
             suggested_action: None,
             structured: true,
+            unproven: false,
         };
     }
     VerdictDecision {
@@ -1082,6 +1124,7 @@ fn decide_change_count(input: &VerdictInput) -> VerdictDecision {
         )],
         suggested_action: Some("Verify the exact number of sites changed.".to_string()),
         structured: true,
+        unproven: false,
     }
 }
 
@@ -1131,6 +1174,7 @@ fn decide_renamed(input: &VerdictInput) -> VerdictDecision {
                 "Claimed renamed, but the old name survives. Re-check the change.".to_string(),
             ),
             structured: true,
+            unproven: false,
         },
         (Some(false), Some(true)) => VerdictDecision {
             status: VerdictStatus::Supported,
@@ -1139,6 +1183,7 @@ fn decide_renamed(input: &VerdictInput) -> VerdictDecision {
             caveats: vec![format!("The diff removes `{old}` and adds `{new}`.")],
             suggested_action: None,
             structured: true,
+            unproven: false,
         },
         (Some(false), _) => VerdictDecision {
             status: VerdictStatus::Contradicted,
@@ -1149,6 +1194,7 @@ fn decide_renamed(input: &VerdictInput) -> VerdictDecision {
             )],
             suggested_action: Some("The new name is missing from the change.".to_string()),
             structured: true,
+            unproven: false,
         },
         // Diff is silent. The index can still catch "renamed" when the old
         // name is in fact still defined.
@@ -1162,6 +1208,7 @@ fn decide_renamed(input: &VerdictInput) -> VerdictDecision {
                     "Claimed renamed, but the old name is still defined.".to_string(),
                 ),
                 structured: true,
+                unproven: false,
             },
             _ => inconclusive(
                 "I couldn't find the rename in the working-tree diff or the index.",
@@ -1183,11 +1230,17 @@ fn decide_command(input: &VerdictInput) -> VerdictDecision {
         .find(|i| i.predicate.as_deref() == Some("command_receipt"));
 
     let Some(item) = receipt else {
-        return inconclusive(
+        // UNPROVEN, not merely refused: the agent asserted a green run and CAN
+        // prove it — truth demands the receipt instead of taking it on faith.
+        return unproven(
             &format!(
-                "No recorded run of {subject} — record runs with `truth run -- <cmd>` (or the agent hook) so success claims become checkable."
+                "You claimed {subject} succeeded, but there is NO recorded run to back it. \
+                 Run it through `truth run -- <cmd>` (or let the agent hook record it) and \
+                 re-verify — truth will not confirm an unproven \"{subject} passes\"."
             ),
-            None,
+            Some(format!(
+                "Run the {subject} command via `truth run -- <cmd>`, then re-check."
+            )),
         );
     };
 
@@ -1219,6 +1272,7 @@ fn decide_command(input: &VerdictInput) -> VerdictDecision {
                 "Fix the failure or re-run before claiming success.".to_string(),
             ),
             structured: true,
+            unproven: false,
         };
     }
     if !fresh {
@@ -1263,6 +1317,7 @@ fn decide_command(input: &VerdictInput) -> VerdictDecision {
         caveats,
         suggested_action,
         structured: true,
+        unproven: false,
     }
 }
 
@@ -1306,6 +1361,7 @@ fn decide_git_state(input: &VerdictInput) -> VerdictDecision {
                     caveats: vec![format!("No commit `{sha}` exists in this repository.")],
                     suggested_action: Some("Re-check the commit sha.".to_string()),
                     structured: true,
+                    unproven: false,
                 };
             }
             None => unverifiable.push(format!("commit `{sha}`")),
@@ -1348,6 +1404,7 @@ fn decide_git_state(input: &VerdictInput) -> VerdictDecision {
                         "Run `git push` (or re-check the remote/branch name).".to_string(),
                     ),
                     structured: true,
+                    unproven: false,
                 };
             }
             None => unverifiable.push("the push target".to_string()),
@@ -1377,6 +1434,7 @@ fn decide_git_state(input: &VerdictInput) -> VerdictDecision {
                     )],
                     suggested_action: Some("Re-check the branch name.".to_string()),
                     structured: true,
+                    unproven: false,
                 };
             }
             None => unverifiable.push(format!("branch `{branch}`")),
@@ -1400,6 +1458,7 @@ fn decide_git_state(input: &VerdictInput) -> VerdictDecision {
                     )],
                     suggested_action: Some("Run `git push`.".to_string()),
                     structured: true,
+                    unproven: false,
                 };
             }
             None => unverifiable.push("the ahead/behind state (no upstream)".to_string()),
@@ -1432,6 +1491,7 @@ fn decide_git_state(input: &VerdictInput) -> VerdictDecision {
         caveats,
         suggested_action: None,
         structured: true,
+        unproven: false,
     }
 }
 
@@ -1520,6 +1580,23 @@ fn inconclusive(msg: &str, action: Option<String>) -> VerdictDecision {
         caveats: vec![msg.to_string()],
         suggested_action: action,
         structured: false,
+        unproven: false,
+    }
+}
+
+/// An UNPROVEN claim: checkable in principle, but the agent withheld the
+/// evidence. Same Inconclusive status as `inconclusive`, but flagged so the
+/// report/hook can DEMAND the proof (block) rather than shrug it off as
+/// unverifiable. Used for "tests pass" with no recorded run.
+fn unproven(msg: &str, action: Option<String>) -> VerdictDecision {
+    VerdictDecision {
+        status: VerdictStatus::Inconclusive,
+        confidence: 0.3,
+        evidence_ids: vec![],
+        caveats: vec![msg.to_string()],
+        suggested_action: action,
+        structured: false,
+        unproven: true,
     }
 }
 
@@ -1548,6 +1625,7 @@ fn count_inconclusive(
         caveats,
         suggested_action: action,
         structured: false,
+        unproven: false,
     }
 }
 
