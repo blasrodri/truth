@@ -131,8 +131,13 @@ fn setup_live_proof(config: &Config) {
     let claim = format!("the current commit is {sha}");
     let proof = (|| -> Result<String> {
         let conn = truth_db::open(&config.database.path)?;
-        let report =
-            crate::verify_turn::verify_claims(&conn, config, &claim, Some(&[claim.clone()]), None)?;
+        let report = crate::verify_turn::verify_claims(
+            &conn,
+            config,
+            &claim,
+            Some(std::slice::from_ref(&claim)),
+            None,
+        )?;
         Ok(crate::verify_turn::render_text(&report))
     })();
 
