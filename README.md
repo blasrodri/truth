@@ -578,3 +578,5 @@ A `T*`/`H*` case that returns `inconclusive` is a **recall gap** (extractor too
 weak); an `F*` case that returns `supported` is a dangerous **false pass**; an
 `R*` case that returns a verdict is a **hallucination**. The bands make all
 three visible, so changes can be measured instead of guessed.
+
+- [JMT x402 Agent Tools](https://jmt-x402-proxy.jmthomasofficial.workers.dev) — 25 paid x402 endpoints on Base mainnet: web search, AI analysis, crypto/stock data, SEC filings, company intel, news, sentiment, macro dashboard. $0.001-$0.15/call USDC. Local LLM-powered.
